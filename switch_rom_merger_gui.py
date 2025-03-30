@@ -8,6 +8,20 @@ import logging
 import queue
 import time
 
+# 禁用SSL证书验证
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    # Legacy Python that doesn't verify HTTPS certificates by default
+    pass
+else:
+    # Handle target environment that doesn't support HTTPS verification
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# 环境变量也设置一下
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
 # 导入主脚本
 import switch_rom_merger
 
@@ -198,7 +212,10 @@ class SwitchRomMergerGUI:
     
     def setup_environment(self):
         """运行环境设置脚本"""
-        os.system("start setup.bat")
+        if os.path.exists("install_full_deps.bat"):
+            os.system("start install_full_deps.bat")
+        else:
+            os.system("start setup.bat")
     
     def open_output_dir(self):
         """打开输出目录"""
@@ -210,6 +227,9 @@ class SwitchRomMergerGUI:
         os.startfile(output_dir)
 
 def main():
+    # 全局禁用SSL证书验证
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
+    
     root = tk.Tk()
     app = SwitchRomMergerGUI(root)
     root.mainloop()

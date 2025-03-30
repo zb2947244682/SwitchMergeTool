@@ -4,6 +4,9 @@ title 启动Switch游戏合并工具
 
 echo 正在启动Switch游戏合并工具...
 
+REM 禁用SSL证书验证
+set PYTHONHTTPSVERIFY=0
+
 REM 检查Python是否安装
 python --version >nul 2>&1
 if errorlevel 1 (

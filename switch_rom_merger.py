@@ -9,7 +9,19 @@ import struct
 import hashlib
 from typing import List, Dict, Tuple, Optional
 import logging
-import zipfile  # 使用内置的zipfile替代py7zr
+import py7zr
+import zipfile
+
+# 禁用SSL证书验证
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    # Legacy Python that doesn't verify HTTPS certificates by default
+    pass
+else:
+    # Handle target environment that doesn't support HTTPS verification
+    ssl._create_default_https_context = _create_unverified_https_context
 
 # 配置日志
 logging.basicConfig(
@@ -35,10 +47,25 @@ class SwitchRomMerger:
         self.title_keys_file = Path('title.keys')
         self.firmware_dir = Path('Firmware')
         
+        # 工具路径
+        self.tools_dir = Path('tools')
+        self.hactoolnet_path = self.tools_dir / "hactoolnet.exe"
+        
+        # 查找nsz.exe，支持在子目录中查找
+        self.nsz_path = None
+        if (self.tools_dir / "nsz.exe").exists():
+            self.nsz_path = self.tools_dir / "nsz.exe"
+        else:
+            # 查找nsz子目录
+            for item in self.tools_dir.glob("*"):
+                if item.is_dir() and (item / "nsz.exe").exists():
+                    self.nsz_path = item / "nsz.exe"
+                    break
+        
         # 检查必要文件
         self._check_required_files()
         
-        # 下载必要的工具
+        # 检查必要的工具
         self._setup_tools()
         
     def _check_required_files(self):
@@ -55,24 +82,25 @@ class SwitchRomMerger:
             raise FileNotFoundError(f"找不到固件目录或固件目录为空: {self.firmware_dir}")
     
     def _setup_tools(self):
-        """下载并设置必要的工具"""
+        """检查必要的工具"""
         # 创建tools目录
-        tools_dir = Path('tools')
-        tools_dir.mkdir(exist_ok=True)
+        self.tools_dir.mkdir(exist_ok=True)
         
         # 确保hactoolnet可用
-        hactoolnet_path = tools_dir / "hactoolnet.exe"
-        if not hactoolnet_path.exists():
+        if not self.hactoolnet_path.exists():
             logger.error("找不到hactoolnet.exe，请手动下载并放置在tools目录下")
             logger.info("您可以从 https://github.com/Thealexbarney/libhac/releases 下载")
             raise FileNotFoundError("找不到hactoolnet.exe")
+        else:
+            logger.info(f"找到hactoolnet工具: {self.hactoolnet_path}")
         
         # 确保nsz工具可用
-        nsz_path = tools_dir / "nsz.exe"
-        if not nsz_path.exists():
+        if not self.nsz_path:
             logger.error("找不到nsz.exe，请手动下载并放置在tools目录下")
             logger.info("您可以从 https://github.com/nicoboss/nsz/releases 下载")
             raise FileNotFoundError("找不到nsz.exe")
+        else:
+            logger.info(f"找到nsz工具: {self.nsz_path}")
         
     def scan_directory(self, directory: Path) -> Dict[str, Dict]:
         """扫描目录并返回按游戏ID分组的文件列表"""
@@ -129,20 +157,48 @@ class SwitchRomMerger:
         """
         # 从文件名中提取信息
         filename = file_path.stem
+        filepath_str = str(file_path)
         
-        # 尝试从文件名中识别DLC和更新
-        is_dlc = 'dlc' in filename.lower() or 'dlc' in str(file_path).lower()
-        is_update = any(update_keyword in filename.lower() for update_keyword in ['update', '更新', 'patch', '补丁', 'v1.', 'v2.'])
+        # 检查是否包含关键字来判断类型
+        is_dlc = 'dlc' in filename.lower() or 'dlc' in filepath_str.lower()
+        is_update = ('upd' in filename.lower() or 'update' in filename.lower() or
+                    '更新' in filename.lower() or 'patch' in filename.lower() or
+                    '补丁' in filename.lower() or 'v1.' in filename.lower() or 'v2.' in filename.lower())
+        
+        # 尝试从文件路径获取游戏名称
+        # 首先检查是否在游戏名称的目录下
+        try:
+            # 获取文件所在的目录名
+            parent_dir = file_path.parent.name
+            grandparent_dir = file_path.parent.parent.name
+            
+            # 如果父目录包含"xci主体"、"upd"或"dlc"等关键字，使用祖父目录名作为游戏名
+            if ('xci' in parent_dir.lower() or 'upd' in parent_dir.lower() or 
+                'dlc' in parent_dir.lower() or 'nsp' in parent_dir.lower()):
+                return grandparent_dir, is_update, is_dlc
+        except:
+            pass
+        
+        # 尝试提取ID格式的信息(格式如[XCI][HK][01001F0019804000][1.0.0])
+        id_match = re.search(r'\[(?:XCI|UPD|DLC|NSP)[^\]]*\]\[(?:[^\]]*)\]\[([0-9A-F]{16})\]', filename)
+        if id_match:
+            game_id = id_match.group(1)
+            # 如果是16位十六进制ID，使用它
+            return game_id, is_update, is_dlc
         
         # 如果文件名格式符合"游戏名_版本_DLC"的格式
-        match = re.search(r'(.+?)(?:_v?(\d+(?:\.\d+)*))?(?:_(\d+)DLC)?', filename)
-        if match:
-            game_name = match.group(1).strip()
+        name_match = re.search(r'(.+?)(?:_v?(\d+(?:\.\d+)*))?(?:_(\d+)DLC)?', filename)
+        if name_match:
+            game_name = name_match.group(1).strip()
             # 使用游戏名称作为ID
             return game_name, is_update, is_dlc
         
-        # 如果无法从文件名中提取，则使用文件名作为游戏ID
-        return filename, is_update, is_dlc
+        # 如果无法提取，使用文件所在目录的名称作为ID
+        try:
+            return file_path.parent.name, is_update, is_dlc
+        except:
+            # 最后的备选方案，使用文件名
+            return filename, is_update, is_dlc
     
     def _get_game_name(self, file_path: Path) -> str:
         """从文件路径中获取游戏名称"""
@@ -197,28 +253,10 @@ class SwitchRomMerger:
             output_filename += ".xci"
             output_path = game_output_dir / output_filename
             
-            # 简化版本：仅复制基础游戏文件到输出目录
-            logger.info(f"由于依赖库限制，将执行简化版合并：复制基础游戏文件")
-            shutil.copy2(base_file, output_path)
+            # 使用专用工具合并文件
+            self._merge_with_tools(base_file, latest_update, dlcs, output_path)
             
-            # 记录其他文件信息
-            info_file = game_output_dir / f"{game_id}_info.txt"
-            with open(info_file, 'w', encoding='utf-8') as f:
-                f.write(f"游戏: {game_id}\n")
-                f.write(f"基础游戏: {base_file}\n")
-                
-                if latest_update:
-                    f.write(f"最新更新: {latest_update}\n")
-                
-                if dlcs:
-                    f.write(f"DLC文件 ({len(dlcs)}):\n")
-                    for dlc in dlcs:
-                        f.write(f"  - {dlc}\n")
-                
-                f.write("\n注意: 由于依赖库限制，未能执行完整合并。请安装Visual C++ Build Tools后重试。")
-            
-            logger.info(f"游戏 {game_id} 处理完成，输出文件: {output_path}")
-            logger.info(f"详细信息已保存到: {info_file}")
+            logger.info(f"游戏 {game_id} 合并完成，输出文件: {output_path}")
             
         except Exception as e:
             logger.error(f"合并游戏 {game_id} 时出错: {str(e)}")
@@ -234,32 +272,200 @@ class SwitchRomMerger:
     
     def _merge_with_tools(self, base_file: Path, update_file: Optional[Path], dlc_files: List[Path], output_path: Path):
         """使用专用工具合并文件"""
-        # 由于依赖库限制，这个功能被简化
-        logger.warning("由于缺少必要的依赖库，完整的合并功能不可用")
-        shutil.copy2(base_file, output_path)
-        logger.info(f"已将基础游戏文件复制到: {output_path}")
+        try:
+            # 创建临时工作目录
+            temp_dir = self.temp_dir / output_path.stem
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            temp_dir.mkdir(parents=True)
+            
+            # 提取基础游戏
+            logger.info(f"正在处理基础游戏: {base_file.name}")
+            base_extract_dir = temp_dir / "base"
+            base_extract_dir.mkdir()
+            
+            # 根据文件类型解压
+            if base_file.suffix.lower() in ['.xci', '.xcz']:
+                self._extract_xci(base_file, base_extract_dir)
+            elif base_file.suffix.lower() in ['.nsp', '.nsz']:
+                self._extract_nsp(base_file, base_extract_dir)
+            
+            # 如果有更新，处理更新
+            if update_file:
+                logger.info(f"正在处理更新文件: {update_file.name}")
+                update_extract_dir = temp_dir / "update"
+                update_extract_dir.mkdir()
+                
+                # 根据文件类型解压
+                if update_file.suffix.lower() in ['.xci', '.xcz']:
+                    self._extract_xci(update_file, update_extract_dir)
+                elif update_file.suffix.lower() in ['.nsp', '.nsz']:
+                    self._extract_nsp(update_file, update_extract_dir)
+                
+                # 合并更新到基础游戏
+                self._apply_update(base_extract_dir, update_extract_dir)
+            
+            # 处理DLC
+            if dlc_files:
+                logger.info(f"正在处理 {len(dlc_files)} 个DLC文件")
+                dlc_extract_dir = temp_dir / "dlc"
+                dlc_extract_dir.mkdir()
+                
+                for dlc_file in dlc_files:
+                    logger.info(f"正在处理DLC: {dlc_file.name}")
+                    # 根据文件类型解压
+                    if dlc_file.suffix.lower() in ['.xci', '.xcz']:
+                        self._extract_xci(dlc_file, dlc_extract_dir)
+                    elif dlc_file.suffix.lower() in ['.nsp', '.nsz']:
+                        self._extract_nsp(dlc_file, dlc_extract_dir)
+                
+                # 合并DLC到基础游戏
+                self._apply_dlc(base_extract_dir, dlc_extract_dir)
+            
+            # 重新打包为XCI
+            logger.info(f"正在将合并后的游戏打包为XCI: {output_path}")
+            self._repack_as_xci(base_extract_dir, output_path)
+            
+            # 清理临时文件
+            shutil.rmtree(temp_dir)
+            logger.info(f"清理临时文件完成")
+            
+        except Exception as e:
+            logger.error(f"使用工具合并文件时出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
     
     def _extract_xci(self, xci_file: Path, output_dir: Path):
         """解压XCI/XCZ文件"""
-        # 由于依赖库限制，这个功能被简化
-        logger.warning(f"无法解压 {xci_file} 到 {output_dir}，缺少必要的依赖库")
+        logger.info(f"解压 {xci_file} 到 {output_dir}")
+        
+        # 如果是XCZ文件，需要先解压为XCI
+        if xci_file.suffix.lower() == '.xcz':
+            temp_xci = self.temp_dir / f"{xci_file.stem}.xci"
+            
+            # 使用nsz工具解压XCZ
+            cmd = [
+                str(self.nsz_path),
+                "-D", str(xci_file),
+                "-o", str(self.temp_dir)
+            ]
+            
+            logger.info(f"执行命令: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"解压XCZ失败: {result.stderr}")
+                raise RuntimeError(f"解压XCZ失败: {result.stderr}")
+            
+            xci_file = temp_xci
+        
+        # 使用hactoolnet解压XCI
+        cmd = [
+            str(self.hactoolnet_path),
+            "--keyset=" + str(self.keys_file),
+            "-t", "xci", "--securedir=" + str(output_dir),
+            str(xci_file)
+        ]
+        
+        logger.info(f"执行命令: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"解压XCI失败: {result.stderr}")
+            raise RuntimeError(f"解压XCI失败: {result.stderr}")
     
     def _extract_nsp(self, nsp_file: Path, output_dir: Path):
         """解压NSP/NSZ文件"""
-        # 由于依赖库限制，这个功能被简化
-        logger.warning(f"无法解压 {nsp_file} 到 {output_dir}，缺少必要的依赖库")
+        logger.info(f"解压 {nsp_file} 到 {output_dir}")
+        
+        # 如果是NSZ文件，需要先解压为NSP
+        if nsp_file.suffix.lower() == '.nsz':
+            temp_nsp = self.temp_dir / f"{nsp_file.stem}.nsp"
+            
+            # 使用nsz工具解压NSZ
+            cmd = [
+                str(self.nsz_path),
+                "-D", str(nsp_file),
+                "-o", str(self.temp_dir)
+            ]
+            
+            logger.info(f"执行命令: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"解压NSZ失败: {result.stderr}")
+                raise RuntimeError(f"解压NSZ失败: {result.stderr}")
+            
+            nsp_file = temp_nsp
+        
+        # 使用hactoolnet解压NSP
+        cmd = [
+            str(self.hactoolnet_path),
+            "--keyset=" + str(self.keys_file),
+            "-t", "pfs0", "--outdir=" + str(output_dir),
+            str(nsp_file)
+        ]
+        
+        logger.info(f"执行命令: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"解压NSP失败: {result.stderr}")
+            raise RuntimeError(f"解压NSP失败: {result.stderr}")
     
     def _apply_update(self, base_dir: Path, update_dir: Path):
         """将更新应用到基础游戏"""
-        logger.warning("应用更新功能不可用，缺少必要的依赖库")
+        logger.info(f"应用更新到基础游戏")
+        
+        # 合并更新文件到基础游戏目录
+        for update_file in update_dir.glob('**/*'):
+            if update_file.is_file():
+                # 计算相对路径
+                rel_path = update_file.relative_to(update_dir)
+                target_path = base_dir / rel_path
+                
+                # 确保目标目录存在
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 复制更新文件到基础游戏目录
+                shutil.copy2(update_file, target_path)
     
     def _apply_dlc(self, base_dir: Path, dlc_dir: Path):
         """将DLC应用到基础游戏"""
-        logger.warning("应用DLC功能不可用，缺少必要的依赖库")
+        logger.info(f"应用DLC到基础游戏")
+        
+        # 合并DLC文件到基础游戏目录
+        for dlc_file in dlc_dir.glob('**/*'):
+            if dlc_file.is_file():
+                # 计算相对路径
+                rel_path = dlc_file.relative_to(dlc_dir)
+                target_path = base_dir / rel_path
+                
+                # 确保目标目录存在
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 复制DLC文件到基础游戏目录
+                shutil.copy2(dlc_file, target_path)
     
     def _repack_as_xci(self, input_dir: Path, output_file: Path):
         """将目录重新打包为XCI文件"""
-        logger.warning("重新打包XCI功能不可用，缺少必要的依赖库")
+        logger.info(f"重新打包为XCI: {output_file}")
+        
+        # 使用hactoolnet打包为XCI
+        cmd = [
+            str(self.hactoolnet_path),
+            "--keyset=" + str(self.keys_file),
+            "-t", "xci", "--create=" + str(output_file),
+            "--securedir=" + str(input_dir)
+        ]
+        
+        logger.info(f"执行命令: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"打包XCI失败: {result.stderr}")
+            raise RuntimeError(f"打包XCI失败: {result.stderr}")
     
     def process_directory(self, directory: Path):
         """处理指定目录下的所有Switch游戏文件"""
@@ -276,6 +482,9 @@ class SwitchRomMerger:
 
 def main():
     try:
+        # 全局禁用SSL证书验证
+        os.environ['PYTHONHTTPSVERIFY'] = '0'
+        
         # 获取当前目录
         current_dir = Path.cwd()
         

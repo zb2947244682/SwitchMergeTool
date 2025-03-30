@@ -7,6 +7,9 @@ echo    Switch游戏合并工具 - 初始化
 echo ======================================
 echo.
 
+REM 禁用SSL证书验证
+set PYTHONHTTPSVERIFY=0
+
 REM 检查Python是否安装
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -64,7 +67,9 @@ if %TOOLS_MISSING% == 1 (
 
 REM 安装Python依赖
 echo 正在检查并安装Python依赖...
-if not exist "install_deps.bat" (
+if exist "install_full_deps.bat" (
+    call install_full_deps.bat
+) else if not exist "install_deps.bat" (
     echo [警告] 未找到install_deps.bat，尝试使用默认安装方式...
     pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 ) else (
