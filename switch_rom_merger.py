@@ -53,64 +53,72 @@ class SwitchRomMerger:
         self.temp_dir.mkdir(exist_ok=True)
         
         # 密钥和固件路径
-        self.keys_file = Path('prod.keys')
-        self.title_keys_file = Path('title.keys')
-        self.firmware_dir = Path('Firmware')
+        self.keys_file = None
+        self.title_keys_file = None
+        
+        # 查找密钥文件
+        possible_key_locations = [
+            Path('prod.keys'),
+            Path(os.path.expanduser('~/.switch/prod.keys')),
+            Path(os.path.expanduser('~/switch/prod.keys')),
+            Path('tools/keys.txt'),
+            Path('tools/keys.txt'),
+        ]
+        
+        for key_path in possible_key_locations:
+            if key_path.exists():
+                self.keys_file = key_path
+                logger.info(f"找到密钥文件: {self.keys_file}")
+                break
         
         # 工具路径
         self.tools_dir = Path('tools')
-        self.hactoolnet_path = self.tools_dir / "hactoolnet.exe"
+        self.hactoolnet_path = None
         
-        # 查找nsz.exe，支持在子目录中查找
+        # 查找hactoolnet.exe
+        if (self.tools_dir / "hactoolnet.exe").exists():
+            self.hactoolnet_path = self.tools_dir / "hactoolnet.exe"
+        else:
+            # 查找子目录
+            for item in self.tools_dir.glob("**/hactoolnet.exe"):
+                self.hactoolnet_path = item
+                break
+        
+        if self.hactoolnet_path:
+            logger.info(f"找到hactoolnet工具: {self.hactoolnet_path}")
+        
+        # 查找nsz.exe，现在直接放在tools目录下
         self.nsz_path = None
         if (self.tools_dir / "nsz.exe").exists():
             self.nsz_path = self.tools_dir / "nsz.exe"
         else:
-            # 查找nsz子目录
-            for item in self.tools_dir.glob("*"):
-                if item.is_dir() and (item / "nsz.exe").exists():
-                    self.nsz_path = item / "nsz.exe"
-                    break
+            # 兼容性查找，以防nsz.exe在子目录中
+            for item in self.tools_dir.glob("**/nsz.exe"):
+                self.nsz_path = item
+                break
         
-        # 检查必要文件
-        self._check_required_files()
+        if self.nsz_path:
+            logger.info(f"找到nsz工具: {self.nsz_path}")
         
         # 检查必要的工具
         self._setup_tools()
         
-    def _check_required_files(self):
-        """检查必要的文件是否存在"""
-        if not self.keys_file.exists():
-            logger.error(f"找不到密钥文件: {self.keys_file}")
-            raise FileNotFoundError(f"找不到密钥文件: {self.keys_file}")
-        
-        if not self.title_keys_file.exists():
-            logger.warning(f"找不到标题密钥文件: {self.title_keys_file}")
-        
-        if not self.firmware_dir.exists() or not any(self.firmware_dir.iterdir()):
-            logger.error(f"找不到固件目录或固件目录为空: {self.firmware_dir}")
-            raise FileNotFoundError(f"找不到固件目录或固件目录为空: {self.firmware_dir}")
-    
     def _setup_tools(self):
         """检查必要的工具"""
         # 创建tools目录
         self.tools_dir.mkdir(exist_ok=True)
         
         # 确保hactoolnet可用
-        if not self.hactoolnet_path.exists():
+        if not self.hactoolnet_path:
             logger.error("找不到hactoolnet.exe，请手动下载并放置在tools目录下")
             logger.info("您可以从 https://github.com/Thealexbarney/libhac/releases 下载")
             raise FileNotFoundError("找不到hactoolnet.exe")
-        else:
-            logger.info(f"找到hactoolnet工具: {self.hactoolnet_path}")
-        
+            
         # 确保nsz工具可用
         if not self.nsz_path:
             logger.error("找不到nsz.exe，请手动下载并放置在tools目录下")
             logger.info("您可以从 https://github.com/nicoboss/nsz/releases 下载")
             raise FileNotFoundError("找不到nsz.exe")
-        else:
-            logger.info(f"找到nsz工具: {self.nsz_path}")
         
     def extract_title_id(self, filename: str) -> Optional[str]:
         """从文件名中提取Title ID"""
@@ -183,6 +191,7 @@ class SwitchRomMerger:
         title_id_map = {}         # 存储TitleID到游戏名称的映射
         base_id_map = {}          # 存储基础ID到完整ID的映射
         dir_files = {}            # 按目录分组的文件
+        name_id_map = {}          # 存储游戏名称到ID的映射，用于去重
         
         logger.info(f"扫描目录: {directory}")
         
@@ -203,9 +212,10 @@ class SwitchRomMerger:
                 dir_files[top_dir].append(file_path)
         
         # 记录找到的目录
-        logger.info(f"找到以下游戏目录:")
-        for dir_name, files in dir_files.items():
-            logger.info(f"  - {dir_name}: {len(files)}个文件")
+        if dir_files:
+            logger.info(f"找到以下游戏目录:")
+            for dir_name, files in dir_files.items():
+                logger.info(f"  - {dir_name}: {len(files)}个文件")
         
         # 第一遍扫描：提取所有文件的Title ID并分类
         for file_path in tqdm(all_files, desc="识别游戏文件"):
@@ -275,7 +285,7 @@ class SwitchRomMerger:
                         # 基础游戏，选择最大的文件
                         if not raw_files[title_id]['base'] or file_path.stat().st_size > raw_files[title_id]['base'].stat().st_size:
                             raw_files[title_id]['base'] = file_path
-                    
+                
                 else:
                     # 没有Title ID的情况下，尝试从文件名和目录名提取信息
                     if parent_dir:
@@ -410,31 +420,152 @@ class SwitchRomMerger:
                     if not game_files[base_id]['base'] and raw_files[title_id]['base']:
                         game_files[base_id]['base'] = raw_files[title_id]['base']
 
-        # 按游戏名称整理并日志输出
-        logger.info(f"\n成功识别 {len(game_files)} 个游戏:")
-        for group_id, files_dict in game_files.items():
-            base_file = files_dict['base']
-            updates = files_dict['updates']
-            dlcs = files_dict['dlcs']
-            game_name = files_dict['name']
-            
-            logger.info(f"游戏: {game_name} (ID: {group_id})")
-            logger.info(f"  基础游戏: {base_file.name if base_file else '无'}")
-            logger.info(f"  更新文件: {len(updates)} 个")
-            logger.info(f"  DLC文件: {len(dlcs)} 个")
-            
-            # 详细记录更新和DLC文件
-            if updates:
-                logger.debug(f"  更新文件列表:")
-                for upd in updates:
-                    logger.debug(f"    - {upd}")
-            
-            if dlcs:
-                logger.debug(f"  DLC文件列表:")
-                for dlc in dlcs:
-                    logger.debug(f"    - {dlc}")
+        # 处理重复游戏，确保每个真实游戏只有一个条目
+        final_games = {}
+        processed_names = set()
         
-        return game_files
+        # 首先整合所有同名游戏
+        for game_id, game_data in game_files.items():
+            game_name = game_data['name']
+            
+            # 标准化游戏名，忽略大小写和特殊字符
+            norm_name = self._normalize_game_name(game_name)
+            
+            if norm_name in processed_names:
+                # 已存在同名游戏，跳过
+                continue
+                
+            # 查找所有同名游戏
+            same_games = []
+            for other_id, other_data in game_files.items():
+                other_name = other_data['name']
+                if self._normalize_game_name(other_name) == norm_name:
+                    same_games.append((other_id, other_data))
+            
+            # 如果只有一个，直接添加
+            if len(same_games) == 1:
+                final_games[game_id] = game_data
+                processed_names.add(norm_name)
+                continue
+                
+            # 有多个同名游戏，合并它们
+            logger.info(f"发现{len(same_games)}个同名游戏 '{game_name}'，将合并为一个条目")
+            
+            # 创建合并后的游戏条目
+            merged_game = {
+                'base': None,
+                'updates': [],
+                'dlcs': [],
+                'name': game_name
+            }
+            
+            # 整合所有文件
+            for _, data in same_games:
+                # 基础游戏取最大的
+                if data['base'] and (not merged_game['base'] or 
+                                    data['base'].stat().st_size > merged_game['base'].stat().st_size):
+                    merged_game['base'] = data['base']
+                
+                # 更新和DLC都合并
+                for update in data['updates']:
+                    if update not in merged_game['updates']:
+                        merged_game['updates'].append(update)
+                
+                for dlc in data['dlcs']:
+                    if dlc not in merged_game['dlcs']:
+                        merged_game['dlcs'].append(dlc)
+            
+            # 使用目录ID或者第一个游戏的ID
+            merged_id = None
+            for temp_id, _ in same_games:
+                if temp_id.startswith("DIR_"):
+                    merged_id = temp_id
+                    break
+            
+            if not merged_id:
+                merged_id = same_games[0][0]
+                
+            final_games[merged_id] = merged_game
+            processed_names.add(norm_name)
+        
+        # 对于每个游戏，只保留最新版本的更新文件
+        for game_id, game_data in final_games.items():
+            if game_data['updates']:
+                # 按照以下标准排序更新文件:
+                # 1. 尝试提取版本号并比较
+                # 2. 如果版本号提取失败，按文件大小排序
+                # 3. 最后按修改时间排序
+                
+                # 为每个更新文件提取版本信息
+                update_info = []
+                for update_file in game_data['updates']:
+                    version = self._extract_version(update_file)
+                    size = update_file.stat().st_size
+                    mtime = update_file.stat().st_mtime
+                    
+                    # 将版本号解析为元组以便比较
+                    version_tuple = (0, 0, 0)
+                    if version:
+                        try:
+                            # 处理不同格式的版本号
+                            parts = version.split('.')
+                            if len(parts) == 1:
+                                version_tuple = (int(parts[0]), 0, 0)
+                            elif len(parts) == 2:
+                                version_tuple = (int(parts[0]), int(parts[1]), 0)
+                            elif len(parts) >= 3:
+                                version_tuple = (int(parts[0]), int(parts[1]), int(parts[2]))
+                        except ValueError:
+                            # 无法解析版本号，保持默认值
+                            pass
+                    
+                    update_info.append((update_file, version_tuple, size, mtime))
+                
+                # 按版本号、大小和修改时间排序，取最高版本
+                sorted_updates = sorted(update_info, key=lambda x: (x[1], x[2], x[3]), reverse=True)
+                
+                if sorted_updates:
+                    # 只保留最高版本的更新文件
+                    latest_update = sorted_updates[0][0]
+                    logger.info(f"游戏 {game_data['name']} 使用最新的更新文件: {latest_update.name}")
+                    game_data['updates'] = [latest_update]
+                
+        # 按游戏名称整理并日志输出
+        if final_games:
+            logger.info(f"\n成功识别 {len(final_games)} 个游戏:")
+            for group_id, files_dict in final_games.items():
+                base_file = files_dict['base']
+                updates = files_dict['updates']
+                dlcs = files_dict['dlcs']
+                game_name = files_dict['name']
+                
+                logger.info(f"游戏: {game_name} (ID: {group_id})")
+                logger.info(f"  基础游戏: {base_file.name if base_file else '无'}")
+                logger.info(f"  更新文件: {len(updates)} 个")
+                logger.info(f"  DLC文件: {len(dlcs)} 个")
+                
+                # 详细记录更新和DLC文件
+                if updates:
+                    logger.debug(f"  更新文件列表:")
+                    for upd in updates:
+                        logger.debug(f"    - {upd}")
+                
+                if dlcs:
+                    logger.debug(f"  DLC文件列表:")
+                    for dlc in dlcs:
+                        logger.debug(f"    - {dlc}")
+        else:
+            logger.warning("未能识别到任何游戏文件")
+        
+        return final_games
+    
+    def _normalize_game_name(self, name: str) -> str:
+        """标准化游戏名称，用于比较"""
+        if not name:
+            return ""
+        # 转换为小写，移除所有特殊字符和空格
+        import re
+        return re.sub(r'[^a-z0-9]', '', name.lower())
     
     def _extract_game_info(self, file_path: Path) -> Optional[Tuple[str, bool, bool]]:
         """
@@ -518,122 +649,43 @@ class SwitchRomMerger:
                 latest_update = max(updates, key=lambda f: f.stat().st_size)
                 logger.info(f"找到最新的更新文件: {latest_update.name}")
             
-            # 合并基础游戏和更新
-            logger.info(f"开始合并游戏 {game_name}")
+            # 简化处理：直接复制文件到输出目录
+            logger.info(f"开始处理游戏 {game_name}")
             logger.info(f"基础游戏: {base_file}")
             if latest_update:
                 logger.info(f"更新文件: {latest_update}")
             logger.info(f"DLC文件: {len(dlcs)} 个")
             
-            # 输出文件名
-            output_filename = f"{game_name}"
+            # 输出目录
+            output_game_dir = game_output_dir / game_name
+            output_game_dir.mkdir(exist_ok=True)
+            
+            # 复制基础游戏文件
+            logger.info(f"复制基础游戏文件...")
+            base_output = output_game_dir / base_file.name
+            shutil.copy2(base_file, base_output)
+            logger.info(f"基础游戏文件复制完成: {base_output}")
+            
+            # 复制最新更新文件
             if latest_update:
-                # 尝试从更新文件名中提取版本号
-                update_version = self._extract_version(latest_update)
-                if update_version:
-                    output_filename += f"_v{update_version}"
-                else:
-                    output_filename += "_更新版"
+                logger.info(f"复制最新更新文件...")
+                update_output = output_game_dir / latest_update.name
+                shutil.copy2(latest_update, update_output)
+                logger.info(f"更新文件复制完成: {update_output}")
             
+            # 复制所有DLC文件
             if dlcs:
-                output_filename += f"_{len(dlcs)}DLC"
-            
-            # 清理文件名称中的特殊字符
-            output_filename = re.sub(r'[\\/:*?"<>|]', '', output_filename)
-            output_filename += ".xci"
-            output_path = game_output_dir / output_filename
-            
-            logger.info(f"输出文件: {output_path}")
-            
-            # 直接复制模式标志，当合并失败时会设置为True
-            direct_copy_mode = False
-            
-            # 开始合并前先创建备份输出目录
-            backup_dir = self.temp_dir / "backup"
-            backup_dir.mkdir(exist_ok=True)
-            
-            # 复制基础游戏文件到备份目录
-            backup_base = backup_dir / base_file.name
-            logger.info(f"备份基础游戏文件: {backup_base}")
-            try:
-                shutil.copy2(base_file, backup_base)
-            except Exception as e:
-                logger.error(f"备份基础游戏文件失败: {str(e)}")
-            
-            # 尝试使用专用工具合并文件
-            try:
-                # 设置超时时间，避免程序卡死
-                import threading
-                import time
+                logger.info(f"复制 {len(dlcs)} 个DLC文件...")
+                dlc_dir = output_game_dir / "DLC"
+                dlc_dir.mkdir(exist_ok=True)
                 
-                # 创建一个事件用于通知合并完成
-                merge_done = threading.Event()
-                merge_success = [False]  # 使用列表，使其能在线程中被修改
+                for dlc_file in dlcs:
+                    dlc_output = dlc_dir / dlc_file.name
+                    shutil.copy2(dlc_file, dlc_output)
                 
-                # 定义合并线程
-                def merge_thread():
-                    try:
-                        self._merge_with_tools(base_file, latest_update, dlcs, output_path)
-                        merge_success[0] = True
-                    except Exception as e:
-                        logger.error(f"合并线程中出错: {str(e)}")
-                    finally:
-                        merge_done.set()
-                
-                # 启动合并线程
-                thread = threading.Thread(target=merge_thread)
-                thread.daemon = True
-                thread.start()
-                
-                # 等待合并完成，最多等待30分钟
-                timeout = 30 * 60  # 30分钟
-                start_time = time.time()
-                
-                logger.info(f"开始合并，最多等待 {timeout/60} 分钟...")
-                
-                while not merge_done.is_set() and (time.time() - start_time) < timeout:
-                    time.sleep(5)
-                    elapsed = time.time() - start_time
-                    logger.info(f"合并进行中... 已经过 {elapsed/60:.1f} 分钟")
-                
-                if not merge_done.is_set():
-                    logger.error(f"合并超时，已等待 {timeout/60} 分钟，切换到直接复制模式")
-                    direct_copy_mode = True
-                elif not merge_success[0]:
-                    logger.error("合并失败，切换到直接复制模式")
-                    direct_copy_mode = True
-                else:
-                    logger.info("合并成功！")
-            except Exception as e:
-                logger.error(f"启动合并线程时出错: {str(e)}")
-                direct_copy_mode = True
+                logger.info(f"DLC文件复制完成")
             
-            # 如果需要直接复制模式
-            if direct_copy_mode:
-                logger.info("使用直接复制模式")
-                
-                # 如果输出文件已经存在，检查是否有效
-                if output_path.exists() and output_path.stat().st_size > 1024 * 1024:
-                    logger.info(f"输出文件已存在且大小合理: {output_path.stat().st_size / (1024*1024):.2f} MB")
-                else:
-                    # 复制基础游戏文件到输出目录
-                    logger.info(f"复制基础游戏文件到输出目录: {output_path}")
-                    try:
-                        shutil.copy2(base_file, output_path)
-                        logger.info(f"复制基础游戏文件成功: {output_path}")
-                    except Exception as e:
-                        logger.error(f"复制基础游戏文件失败: {str(e)}")
-                        
-                        # 尝试从备份目录复制
-                        if backup_base.exists():
-                            logger.info(f"尝试从备份目录复制: {backup_base}")
-                            try:
-                                shutil.copy2(backup_base, output_path)
-                                logger.info(f"从备份目录复制成功")
-                            except Exception as e2:
-                                logger.error(f"从备份目录复制失败: {str(e2)}")
-            
-            logger.info(f"游戏 {game_name} 处理完成，输出文件: {output_path}")
+            logger.info(f"游戏 {game_name} 处理完成，输出目录: {output_game_dir}")
             
         except Exception as e:
             logger.error(f"合并游戏 {game_name} 时出错: {str(e)}")
@@ -642,439 +694,23 @@ class SwitchRomMerger:
     
     def _extract_version(self, file_path: Path) -> Optional[str]:
         """从文件名中提取版本号"""
-        match = re.search(r'v?(\d+\.\d+(\.\d+)?)', file_path.stem)
-        if match:
-            return match.group(1)
+        # 首先尝试匹配常见的版本号格式
+        patterns = [
+            r'v(\d+\.\d+(\.\d+)?)',  # v1.2.3 格式
+            r'v(\d+_\d+(_\d+)?)',    # v1_2_3 格式
+            r'[vV](\d+)',            # v1 格式
+            r'(\d+\.\d+(\.\d+)?)',   # 1.2.3 格式
+            r'(\d+_\d+(_\d+)?)'      # 1_2_3 格式
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, str(file_path))
+            if match:
+                version = match.group(1)
+                # 标准化版本号格式（将_替换为.）
+                return version.replace('_', '.')
+        
         return None
-    
-    def _merge_with_tools(self, base_file: Path, update_file: Optional[Path], dlc_files: List[Path], output_path: Path):
-        """使用专用工具合并文件"""
-        try:
-            # 创建临时工作目录
-            temp_dir = self.temp_dir / output_path.stem
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-            temp_dir.mkdir(parents=True)
-            
-            # 提取基础游戏
-            logger.info(f"正在处理基础游戏: {base_file.name}")
-            base_extract_dir = temp_dir / "base"
-            base_extract_dir.mkdir()
-            
-            # 根据文件类型解压
-            if base_file.suffix.lower() in ['.xci', '.xcz']:
-                self._extract_xci(base_file, base_extract_dir)
-            elif base_file.suffix.lower() in ['.nsp', '.nsz']:
-                self._extract_nsp(base_file, base_extract_dir)
-            
-            # 如果有更新，处理更新
-            if update_file:
-                logger.info(f"正在处理更新文件: {update_file.name}")
-                update_extract_dir = temp_dir / "update"
-                update_extract_dir.mkdir()
-                
-                # 根据文件类型解压
-                if update_file.suffix.lower() in ['.xci', '.xcz']:
-                    self._extract_xci(update_file, update_extract_dir)
-                elif update_file.suffix.lower() in ['.nsp', '.nsz']:
-                    self._extract_nsp(update_file, update_extract_dir)
-                
-                # 合并更新到基础游戏
-                self._apply_update(base_extract_dir, update_extract_dir)
-            
-            # 处理DLC
-            if dlc_files:
-                logger.info(f"正在处理 {len(dlc_files)} 个DLC文件")
-                dlc_extract_dir = temp_dir / "dlc"
-                dlc_extract_dir.mkdir()
-                
-                for dlc_file in dlc_files:
-                    logger.info(f"正在处理DLC: {dlc_file.name}")
-                    # 根据文件类型解压
-                    if dlc_file.suffix.lower() in ['.xci', '.xcz']:
-                        self._extract_xci(dlc_file, dlc_extract_dir)
-                    elif dlc_file.suffix.lower() in ['.nsp', '.nsz']:
-                        self._extract_nsp(dlc_file, dlc_extract_dir)
-                
-                # 合并DLC到基础游戏
-                self._apply_dlc(base_extract_dir, dlc_extract_dir)
-            
-            # 重新打包为XCI
-            logger.info(f"正在将合并后的游戏打包为XCI: {output_path}")
-            self._repack_as_xci(base_extract_dir, output_path)
-            
-            # 清理临时文件
-            shutil.rmtree(temp_dir)
-            logger.info(f"清理临时文件完成")
-            
-        except Exception as e:
-            logger.error(f"使用工具合并文件时出错: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-    
-    def _extract_xci(self, xci_file: Path, output_dir: Path):
-        """解压XCI/XCZ文件"""
-        logger.info(f"解压 {xci_file} 到 {output_dir}")
-        
-        # 如果是XCZ文件，需要先解压为XCI
-        if xci_file.suffix.lower() == '.xcz':
-            temp_xci = self.temp_dir / f"{xci_file.stem}.xci"
-            logger.info(f"这是XCZ文件，需要先解压为XCI: {temp_xci}")
-            
-            # 使用nsz工具解压XCZ
-            cmd = [
-                str(self.nsz_path),
-                "-D", str(xci_file),
-                "-o", str(self.temp_dir)
-            ]
-            
-            logger.info(f"执行命令: {' '.join(cmd)}")
-            
-            try:
-                # 使用subprocess.Popen来实时输出进度
-                process = subprocess.Popen(
-                    cmd, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-                
-                # 实时输出进度
-                for line in process.stdout:
-                    logger.info(f"NSZ输出: {line.strip()}")
-                
-                # 等待进程完成
-                process.wait()
-                
-                if process.returncode != 0:
-                    error = process.stderr.read()
-                    logger.error(f"解压XCZ失败，返回码: {process.returncode}, 错误: {error}")
-                    raise RuntimeError(f"解压XCZ失败: {error}")
-                
-                # 检查解压后的文件是否存在
-                if not temp_xci.exists():
-                    # 尝试查找其他可能的输出文件
-                    potential_files = list(self.temp_dir.glob(f"{xci_file.stem}*.xci"))
-                    if potential_files:
-                        temp_xci = potential_files[0]
-                        logger.info(f"找到可能的XCI文件: {temp_xci}")
-                    else:
-                        logger.error(f"解压后未找到XCI文件: {temp_xci}")
-                        # 列出临时目录中的所有文件
-                        all_files = list(self.temp_dir.glob("*"))
-                        logger.info(f"临时目录中的文件: {[f.name for f in all_files]}")
-                        raise FileNotFoundError(f"解压后未找到XCI文件: {temp_xci}")
-            except Exception as e:
-                logger.error(f"执行NSZ命令时出错: {str(e)}")
-                # 尝试直接复制XCZ文件作为备选方案
-                logger.info(f"尝试直接复制基础游戏文件...")
-                shutil.copy2(xci_file, output_dir / xci_file.name)
-                return
-            
-            xci_file = temp_xci
-        
-        # 使用hactoolnet解压XCI
-        cmd = [
-            str(self.hactoolnet_path),
-            "--keyset=" + str(self.keys_file),
-            "-t", "xci", "--securedir=" + str(output_dir),
-            str(xci_file)
-        ]
-        
-        logger.info(f"执行命令: {' '.join(cmd)}")
-        
-        try:
-            # 使用subprocess.Popen来实时输出进度
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            # 实时输出进度
-            for line in process.stdout:
-                logger.info(f"hactoolnet输出: {line.strip()}")
-            
-            # 等待进程完成
-            process.wait()
-            
-            if process.returncode != 0:
-                error = process.stderr.read()
-                logger.error(f"解压XCI失败，返回码: {process.returncode}, 错误: {error}")
-                # 尝试直接复制XCI文件作为备选方案
-                logger.info(f"尝试直接复制基础游戏文件...")
-                shutil.copy2(xci_file, output_dir / xci_file.name)
-                return
-            
-            # 检查解压后的目录是否有文件
-            output_files = list(output_dir.glob("*"))
-            if not output_files:
-                logger.warning(f"解压XCI后目录为空: {output_dir}")
-                # 尝试直接复制XCI文件作为备选方案
-                logger.info(f"尝试直接复制基础游戏文件...")
-                shutil.copy2(xci_file, output_dir / xci_file.name)
-            else:
-                logger.info(f"解压XCI成功，输出目录中的文件: {[f.name for f in output_files]}")
-        except Exception as e:
-            logger.error(f"执行hactoolnet命令时出错: {str(e)}")
-            # 尝试直接复制XCI文件作为备选方案
-            logger.info(f"尝试直接复制基础游戏文件...")
-            shutil.copy2(xci_file, output_dir / xci_file.name)
-    
-    def _extract_nsp(self, nsp_file: Path, output_dir: Path):
-        """解压NSP/NSZ文件"""
-        logger.info(f"解压 {nsp_file} 到 {output_dir}")
-        
-        # 如果是NSZ文件，需要先解压为NSP
-        if nsp_file.suffix.lower() == '.nsz':
-            temp_nsp = self.temp_dir / f"{nsp_file.stem}.nsp"
-            logger.info(f"这是NSZ文件，需要先解压为NSP: {temp_nsp}")
-            
-            # 使用nsz工具解压NSZ
-            cmd = [
-                str(self.nsz_path),
-                "-D", str(nsp_file),
-                "-o", str(self.temp_dir)
-            ]
-            
-            logger.info(f"执行命令: {' '.join(cmd)}")
-            
-            try:
-                # 使用subprocess.Popen来实时输出进度
-                process = subprocess.Popen(
-                    cmd, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-                
-                # 实时输出进度
-                for line in process.stdout:
-                    logger.info(f"NSZ输出: {line.strip()}")
-                
-                # 等待进程完成
-                process.wait()
-                
-                if process.returncode != 0:
-                    error = process.stderr.read()
-                    logger.error(f"解压NSZ失败，返回码: {process.returncode}, 错误: {error}")
-                    raise RuntimeError(f"解压NSZ失败: {error}")
-                
-                # 检查解压后的文件是否存在
-                if not temp_nsp.exists():
-                    # 尝试查找其他可能的输出文件
-                    potential_files = list(self.temp_dir.glob(f"{nsp_file.stem}*.nsp"))
-                    if potential_files:
-                        temp_nsp = potential_files[0]
-                        logger.info(f"找到可能的NSP文件: {temp_nsp}")
-                    else:
-                        logger.error(f"解压后未找到NSP文件: {temp_nsp}")
-                        # 列出临时目录中的所有文件
-                        all_files = list(self.temp_dir.glob("*"))
-                        logger.info(f"临时目录中的文件: {[f.name for f in all_files]}")
-                        raise FileNotFoundError(f"解压后未找到NSP文件: {temp_nsp}")
-            except Exception as e:
-                logger.error(f"执行NSZ命令时出错: {str(e)}")
-                # 尝试直接复制NSZ文件作为备选方案
-                logger.info(f"尝试直接复制DLC/更新文件...")
-                shutil.copy2(nsp_file, output_dir / nsp_file.name)
-                return
-            
-            nsp_file = temp_nsp
-        
-        # 使用hactoolnet解压NSP
-        cmd = [
-            str(self.hactoolnet_path),
-            "--keyset=" + str(self.keys_file),
-            "-t", "pfs0", "--outdir=" + str(output_dir),
-            str(nsp_file)
-        ]
-        
-        logger.info(f"执行命令: {' '.join(cmd)}")
-        
-        try:
-            # 使用subprocess.Popen来实时输出进度
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            # 实时输出进度
-            for line in process.stdout:
-                logger.info(f"hactoolnet输出: {line.strip()}")
-            
-            # 等待进程完成
-            process.wait()
-            
-            if process.returncode != 0:
-                error = process.stderr.read()
-                logger.error(f"解压NSP失败，返回码: {process.returncode}, 错误: {error}")
-                # 尝试直接复制NSP文件作为备选方案
-                logger.info(f"尝试直接复制DLC/更新文件...")
-                shutil.copy2(nsp_file, output_dir / nsp_file.name)
-                return
-            
-            # 检查解压后的目录是否有文件
-            output_files = list(output_dir.glob("*"))
-            if not output_files:
-                logger.warning(f"解压NSP后目录为空: {output_dir}")
-                # 尝试直接复制NSP文件作为备选方案
-                logger.info(f"尝试直接复制DLC/更新文件...")
-                shutil.copy2(nsp_file, output_dir / nsp_file.name)
-            else:
-                logger.info(f"解压NSP成功，输出目录中的文件: {[f.name for f in output_files]}")
-        except Exception as e:
-            logger.error(f"执行hactoolnet命令时出错: {str(e)}")
-            # 尝试直接复制NSP文件作为备选方案
-            logger.info(f"尝试直接复制DLC/更新文件...")
-            shutil.copy2(nsp_file, output_dir / nsp_file.name)
-    
-    def _apply_update(self, base_dir: Path, update_dir: Path):
-        """将更新应用到基础游戏"""
-        logger.info(f"应用更新到基础游戏")
-        
-        # 合并更新文件到基础游戏目录
-        for update_file in update_dir.glob('**/*'):
-            if update_file.is_file():
-                # 计算相对路径
-                rel_path = update_file.relative_to(update_dir)
-                target_path = base_dir / rel_path
-                
-                # 确保目标目录存在
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # 复制更新文件到基础游戏目录
-                shutil.copy2(update_file, target_path)
-    
-    def _apply_dlc(self, base_dir: Path, dlc_dir: Path):
-        """将DLC应用到基础游戏"""
-        logger.info(f"应用DLC到基础游戏")
-        
-        # 合并DLC文件到基础游戏目录
-        for dlc_file in dlc_dir.glob('**/*'):
-            if dlc_file.is_file():
-                # 计算相对路径
-                rel_path = dlc_file.relative_to(dlc_dir)
-                target_path = base_dir / rel_path
-                
-                # 确保目标目录存在
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # 复制DLC文件到基础游戏目录
-                shutil.copy2(dlc_file, target_path)
-    
-    def _repack_as_xci(self, input_dir: Path, output_file: Path):
-        """将目录重新打包为XCI文件"""
-        logger.info(f"重新打包为XCI: {output_file}")
-        
-        # 检查输入目录是否为空
-        input_files = list(input_dir.glob("**/*"))
-        if not input_files:
-            logger.error(f"输入目录为空，无法打包XCI: {input_dir}")
-            logger.info(f"尝试直接复制最初的主体游戏文件作为输出...")
-            
-            # 查找同名的XCI文件作为备选
-            base_files = list(self.temp_dir.glob("**/*.xci"))
-            if base_files:
-                # 使用最大的文件（很可能是主游戏）
-                biggest_file = max(base_files, key=lambda f: f.stat().st_size)
-                logger.info(f"找到备选XCI文件: {biggest_file}")
-                shutil.copy2(biggest_file, output_file)
-                return
-            else:
-                logger.error(f"未找到备选XCI文件，无法创建输出")
-                return
-        
-        # 计算输入文件的总大小
-        total_size = sum(f.stat().st_size for f in input_files if f.is_file())
-        logger.info(f"输入文件总大小: {total_size / (1024 * 1024):.2f} MB")
-        
-        # 使用hactoolnet打包为XCI
-        cmd = [
-            str(self.hactoolnet_path),
-            "--keyset=" + str(self.keys_file),
-            "-t", "xci", "--create=" + str(output_file),
-            "--securedir=" + str(input_dir)
-        ]
-        
-        logger.info(f"执行命令: {' '.join(cmd)}")
-        
-        try:
-            # 使用subprocess.Popen来实时输出进度
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            # 实时输出进度
-            for line in process.stdout:
-                logger.info(f"hactoolnet打包输出: {line.strip()}")
-            
-            # 等待进程完成
-            process.wait()
-            
-            if process.returncode != 0:
-                error = process.stderr.read()
-                logger.error(f"打包XCI失败，返回码: {process.returncode}, 错误: {error}")
-                
-                # 尝试使用备选方案：直接复制主游戏文件
-                logger.info(f"尝试直接复制最初的主体游戏文件作为输出...")
-                
-                # 查找同名的XCI文件作为备选
-                base_files = list(self.temp_dir.glob("**/*.xci"))
-                if base_files:
-                    # 使用最大的文件（很可能是主游戏）
-                    biggest_file = max(base_files, key=lambda f: f.stat().st_size)
-                    logger.info(f"找到备选XCI文件: {biggest_file}")
-                    shutil.copy2(biggest_file, output_file)
-                else:
-                    logger.error(f"未找到备选XCI文件，无法创建输出")
-                return
-            
-            # 检查输出文件是否存在和大小是否合理
-            if output_file.exists():
-                output_size = output_file.stat().st_size
-                logger.info(f"打包XCI成功，输出文件大小: {output_size / (1024 * 1024):.2f} MB")
-                
-                # 简单检查文件大小是否合理
-                if output_size < 1024 * 1024:  # 小于1MB
-                    logger.warning(f"输出文件大小异常小: {output_size / (1024 * 1024):.2f} MB")
-            else:
-                logger.error(f"打包完成但输出文件不存在: {output_file}")
-                
-                # 尝试使用备选方案
-                logger.info(f"尝试直接复制主体游戏文件作为输出...")
-                base_files = list(self.temp_dir.glob("**/*.xci"))
-                if base_files:
-                    biggest_file = max(base_files, key=lambda f: f.stat().st_size)
-                    logger.info(f"找到备选XCI文件: {biggest_file}")
-                    shutil.copy2(biggest_file, output_file)
-        except Exception as e:
-            logger.error(f"执行hactoolnet打包命令时出错: {str(e)}")
-            
-            # 尝试使用备选方案
-            logger.info(f"尝试直接复制主体游戏文件作为输出...")
-            base_files = list(self.temp_dir.glob("**/*.xci"))
-            if base_files:
-                biggest_file = max(base_files, key=lambda f: f.stat().st_size)
-                logger.info(f"找到备选XCI文件: {biggest_file}")
-                shutil.copy2(biggest_file, output_file)
     
     def process_directory(self, directory: Path):
         """处理指定目录下的所有Switch游戏文件"""
