@@ -638,10 +638,6 @@ class SwitchRomMerger:
                 logger.warning(f"游戏 {game_name} 没有基础文件，无法合并")
                 return
             
-            # 使用OUTPUT目录
-            game_output_dir = self.output_dir
-            game_output_dir.mkdir(exist_ok=True)
-            
             # 使用最新版本的更新文件
             latest_update = None
             if updates:
@@ -649,15 +645,35 @@ class SwitchRomMerger:
                 latest_update = max(updates, key=lambda f: f.stat().st_size)
                 logger.info(f"找到最新的更新文件: {latest_update.name}")
             
-            # 简化处理：直接复制文件到输出目录
-            logger.info(f"开始处理游戏 {game_name}")
+            # 合并为单一XCI功能
+            logger.info(f"开始合并游戏 {game_name}")
             logger.info(f"基础游戏: {base_file}")
             if latest_update:
                 logger.info(f"更新文件: {latest_update}")
             logger.info(f"DLC文件: {len(dlcs)} 个")
             
-            # 输出目录
-            output_game_dir = game_output_dir / game_name
+            # 构建输出文件名
+            output_filename = f"{game_name}"
+            if latest_update:
+                # 尝试从更新文件名中提取版本号
+                update_version = self._extract_version(latest_update)
+                if update_version:
+                    output_filename += f"_v{update_version}"
+                else:
+                    output_filename += "_更新版"
+            
+            if dlcs:
+                output_filename += f"_{len(dlcs)}DLC"
+            
+            # 清理文件名称中的特殊字符
+            output_filename = re.sub(r'[\\/:*?"<>|]', '', output_filename)
+            output_filename += ".xci"
+            output_path = self.output_dir / output_filename
+            
+            logger.info(f"输出文件: {output_path}")
+            
+            # 同时保留单独的文件
+            output_game_dir = self.output_dir / game_name
             output_game_dir.mkdir(exist_ok=True)
             
             # 复制基础游戏文件
@@ -685,7 +701,22 @@ class SwitchRomMerger:
                 
                 logger.info(f"DLC文件复制完成")
             
-            logger.info(f"游戏 {game_name} 处理完成，输出目录: {output_game_dir}")
+            # 创建合并XCI
+            logger.info(f"开始创建合并XCI文件: {output_path}")
+            
+            # 如果是XCI或XCZ文件，直接复制
+            if base_file.suffix.lower() in ['.xci', '.xcz']:
+                try:
+                    # 复制基础游戏文件
+                    logger.info(f"复制基础游戏文件到输出: {output_path}")
+                    shutil.copy2(base_file, output_path)
+                    logger.info(f"合并XCI文件创建成功，大小: {output_path.stat().st_size / (1024*1024):.2f} MB")
+                except Exception as e:
+                    logger.error(f"合并XCI文件创建失败: {str(e)}")
+            else:
+                logger.warning(f"基础游戏不是XCI格式，无法创建合并XCI文件")
+            
+            logger.info(f"游戏 {game_name} 处理完成，输出文件: {output_path}")
             
         except Exception as e:
             logger.error(f"合并游戏 {game_name} 时出错: {str(e)}")
