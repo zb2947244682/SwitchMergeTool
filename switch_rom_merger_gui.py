@@ -46,12 +46,33 @@ queue_handler.setFormatter(formatter)
 gui_logger.addHandler(queue_handler)
 logging.getLogger().addHandler(queue_handler)
 
+class RedirectText:
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+        self.buffer = ""
+
+    def write(self, string):
+        self.buffer += string
+        self.text_widget.insert(tk.END, string)
+        self.text_widget.see(tk.END)
+        self.text_widget.update()
+
+    def flush(self):
+        pass
+
 class SwitchRomMergerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Switch游戏合并工具")
         self.root.geometry("800x600")
         self.root.minsize(700, 500)
+        
+        # 设置图标
+        try:
+            if os.path.exists("icon.ico"):
+                self.root.iconbitmap("icon.ico")
+        except Exception:
+            pass
         
         # 设置界面
         self.setup_ui()
@@ -65,79 +86,101 @@ class SwitchRomMergerGUI:
         
         # 日志刷新计时器
         self.root.after(100, self.update_log_display)
+        
+        # 状态变量
+        self.running = False
+        self.merger = None
+        
+        # 重定向标准输出
+        self.text_redirect = RedirectText(self.log_text)
+        sys.stdout = self.text_redirect
+        sys.stderr = self.text_redirect
+        
+        # 状态栏
+        self.status_var = tk.StringVar(value="就绪")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM, pady=5)
     
     def setup_ui(self):
         # 创建主框架
-        main_frame = tk.Frame(self.root, padx=10, pady=10)
+        main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # 顶部框架 - 选择目录
-        top_frame = tk.Frame(main_frame)
-        top_frame.pack(fill=tk.X, pady=(0, 10))
+        # 控制面板
+        control_frame = ttk.LabelFrame(main_frame, text="控制面板", padding="10")
+        control_frame.pack(fill=tk.X, pady=5)
         
-        tk.Label(top_frame, text="ROM目录:").pack(side=tk.LEFT, padx=(0, 5))
+        # 输入目录
+        input_frame = ttk.Frame(control_frame)
+        input_frame.pack(fill=tk.X, pady=5)
         
-        self.dir_var = tk.StringVar(value=str(Path.cwd() / "rom"))
-        dir_entry = tk.Entry(top_frame, textvariable=self.dir_var, width=50)
-        dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        ttk.Label(input_frame, text="游戏文件目录:").pack(side=tk.LEFT, padx=5)
+        self.input_dir_var = tk.StringVar(value=os.path.join(os.getcwd(), "rom"))
+        ttk.Entry(input_frame, textvariable=self.input_dir_var, width=50).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        ttk.Button(input_frame, text="浏览", command=self.browse_input_dir).pack(side=tk.LEFT, padx=5)
         
-        browse_button = tk.Button(top_frame, text="浏览...", command=self.browse_directory)
-        browse_button.pack(side=tk.LEFT)
+        # 模式选择
+        mode_frame = ttk.Frame(control_frame)
+        mode_frame.pack(fill=tk.X, pady=5)
         
-        # 选项框架
-        options_frame = tk.Frame(main_frame)
-        options_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(mode_frame, text="扫描模式:").pack(side=tk.LEFT, padx=5)
+        self.scan_mode_var = tk.StringVar(value="all")
+        ttk.Radiobutton(mode_frame, text="所有游戏", variable=self.scan_mode_var, value="all").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(mode_frame, text="仅扫描", variable=self.scan_mode_var, value="scan_only").pack(side=tk.LEFT, padx=5)
         
-        # 游戏选择下拉框
-        self.game_selection_frame = tk.Frame(options_frame)
-        self.game_selection_frame.pack(fill=tk.X, pady=(0, 5))
+        # 游戏ID输入
+        game_id_frame = ttk.Frame(control_frame)
+        game_id_frame.pack(fill=tk.X, pady=5)
         
-        tk.Label(self.game_selection_frame, text="选择游戏:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(game_id_frame, text="游戏名称(可选):").pack(side=tk.LEFT, padx=5)
+        self.game_id_var = tk.StringVar()
+        ttk.Entry(game_id_frame, textvariable=self.game_id_var, width=40).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        ttk.Label(game_id_frame, text="(输入游戏名称的一部分以筛选)").pack(side=tk.LEFT, padx=5)
         
-        self.game_var = tk.StringVar(value="全部游戏")
-        self.game_combo = ttk.Combobox(self.game_selection_frame, textvariable=self.game_var, state="readonly", width=50)
-        self.game_combo["values"] = ["全部游戏", "扫描中..."]
-        self.game_combo.current(0)
-        self.game_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        # 合并说明
+        note_frame = ttk.LabelFrame(main_frame, text="合并说明", padding="10")
+        note_frame.pack(fill=tk.X, pady=5)
         
-        # 扫描按钮
-        self.scan_button = tk.Button(self.game_selection_frame, text="扫描游戏", command=self.scan_games)
-        self.scan_button.pack(side=tk.LEFT)
+        note_text = "本工具会将游戏整理到OUTPUT目录，并生成以下文件:\n" \
+                    "1. 基础XCI文件 - 包含基础游戏，但不含更新和DLC\n" \
+                    "2. 分类目录 - 包含基础游戏、最新更新和所有DLC文件\n\n" \
+                    "注意: 如需创建完整合并的XCI(包含更新和DLC)，请使用:\n" \
+                    "- SAK (Switch Army Knife)\n" \
+                    "- NSC_BUILDER\n" \
+                    "这些工具可以将我们整理好的文件进行真正的合并。\n\n" \
+                    "在YUZU中使用时，您可以:\n" \
+                    "1. 直接加载基础XCI文件(不含更新/DLC)\n" \
+                    "2. 加载基础XCI后，通过'文件->安装文件到NAND'安装更新和DLC"
         
-        # 中间框架 - 日志显示
-        mid_frame = tk.Frame(main_frame)
-        mid_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        note_label = ttk.Label(note_frame, text=note_text, justify=tk.LEFT, wraplength=780)
+        note_label.pack(fill=tk.X, pady=5)
         
-        tk.Label(mid_frame, text="处理日志:").pack(anchor=tk.W)
+        # 按钮
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(fill=tk.X, pady=5)
         
-        self.log_text = scrolledtext.ScrolledText(mid_frame, height=20, wrap=tk.WORD)
+        self.start_button = ttk.Button(button_frame, text="开始处理", command=self.start_processing)
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        
+        self.stop_button = ttk.Button(button_frame, text="停止", command=self.stop_processing, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+        
+        # 日志区域
+        log_frame = ttk.LabelFrame(main_frame, text="处理日志", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=80, height=20)
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.config(state=tk.DISABLED)
         
-        # 底部框架 - 按钮
-        bottom_frame = tk.Frame(main_frame)
-        bottom_frame.pack(fill=tk.X)
-        
-        self.start_button = tk.Button(bottom_frame, text="开始处理", command=self.start_processing, width=15)
-        self.start_button.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.stop_button = tk.Button(bottom_frame, text="停止处理", command=self.stop_processing, width=15, state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.setup_button = tk.Button(bottom_frame, text="环境设置", command=self.setup_environment, width=15)
-        self.setup_button.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.output_button = tk.Button(bottom_frame, text="打开输出目录", command=self.open_output_dir, width=15)
-        self.output_button.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.exit_button = tk.Button(bottom_frame, text="退出", command=self.root.quit, width=15)
-        self.exit_button.pack(side=tk.RIGHT)
+        # 状态栏
+        self.status_var = tk.StringVar(value="就绪")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM, pady=5)
     
-    def browse_directory(self):
-        """打开目录选择对话框"""
-        directory = filedialog.askdirectory(initialdir=self.dir_var.get())
+    def browse_input_dir(self):
+        directory = filedialog.askdirectory(initialdir=self.input_dir_var.get())
         if directory:
-            self.dir_var.set(directory)
+            self.input_dir_var.set(directory)
     
     def update_log_display(self):
         """更新日志显示"""
@@ -178,182 +221,99 @@ class SwitchRomMergerGUI:
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
     
-    def scan_games(self):
-        """扫描游戏"""
-        if self.worker_thread and self.worker_thread.is_alive():
-            messagebox.showinfo("处理中", "已有处理任务正在进行中")
-            return
-        
-        directory = Path(self.dir_var.get())
-        if not directory.exists():
-            messagebox.showerror("错误", f"目录不存在: {directory}")
-            return
-        
-        # 更新UI状态
-        self.scan_button.config(state=tk.DISABLED, text="扫描中...")
-        self.game_var.set("扫描中...")
-        self.game_combo["values"] = ["扫描中..."]
-        self.game_combo.current(0)
-        
-        # 清空日志显示
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.delete(1.0, tk.END)
-        self.log_text.config(state=tk.DISABLED)
-        
-        # 创建并启动扫描线程
-        self.worker_thread = threading.Thread(
-            target=self.scan_thread, 
-            args=(directory,),
-            daemon=True
-        )
-        self.worker_thread.start()
-    
-    def scan_thread(self, directory):
-        """扫描线程"""
-        try:
-            gui_logger.info(f"开始扫描目录: {directory}")
-            
-            # 创建合并器实例
-            merger = switch_rom_merger.SwitchRomMerger()
-            
-            # 扫描目录
-            self.games = merger.scan_directory(directory)
-            
-            # 更新游戏下拉列表
-            game_names = ["全部游戏"]
-            for game_id, game_data in self.games.items():
-                game_name = game_data['name']
-                # 只添加有基础游戏的条目
-                if game_data['base']:
-                    game_names.append(f"{game_name}")
-            
-            # 在主线程中更新UI
-            self.root.after(0, lambda: self.update_games_ui(game_names))
-            
-            gui_logger.info(f"扫描完成，找到 {len(game_names)-1} 个可合并的游戏")
-            
-        except Exception as e:
-            gui_logger.error(f"扫描过程中出现错误: {str(e)}")
-            import traceback
-            gui_logger.error(traceback.format_exc())
-            
-            # 在主线程中显示错误消息
-            self.root.after(0, lambda: messagebox.showerror("错误", f"扫描过程中出现错误:\n{str(e)}"))
-            
-            # 恢复UI状态
-            self.root.after(0, lambda: self.scan_button.config(state=tk.NORMAL, text="扫描游戏"))
-            self.root.after(0, lambda: self.game_var.set("全部游戏"))
-            self.root.after(0, lambda: self.game_combo.config(values=["全部游戏"]))
-    
-    def update_games_ui(self, game_names):
-        """更新游戏列表UI"""
-        self.game_combo["values"] = game_names
-        self.game_var.set("全部游戏")
-        self.scan_button.config(state=tk.NORMAL, text="扫描游戏")
-    
     def start_processing(self):
-        """开始处理"""
-        if self.worker_thread and self.worker_thread.is_alive():
-            messagebox.showinfo("处理中", "已有处理任务正在进行中")
+        if self.running:
             return
+            
+        # 获取输入
+        input_dir = self.input_dir_var.get()
+        scan_mode = self.scan_mode_var.get()
+        game_id = self.game_id_var.get()
         
-        directory = Path(self.dir_var.get())
-        if not directory.exists():
-            messagebox.showerror("错误", f"目录不存在: {directory}")
+        if not os.path.exists(input_dir):
+            messagebox.showerror("错误", f"目录不存在: {input_dir}")
             return
-        
-        # 如果还未扫描游戏，先扫描
-        if not self.games:
-            self.scan_games()
-            messagebox.showinfo("提示", "请先扫描游戏，然后再开始处理")
-            return
-        
-        # 获取选择的游戏
-        selected_game = self.game_var.get()
-        if selected_game == "扫描中...":
-            messagebox.showinfo("处理中", "正在扫描游戏，请稍后再试")
-            return
-        
-        # 清空日志显示
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.delete(1.0, tk.END)
-        self.log_text.config(state=tk.DISABLED)
-        
+            
         # 更新UI状态
-        self.start_button.config(state=tk.DISABLED, text="处理中...")
+        self.running = True
+        self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
-        self.scan_button.config(state=tk.DISABLED)
+        self.status_var.set("正在处理...")
+        self.log_text.delete(1.0, tk.END)
         
-        # 重置停止事件
-        self.stop_event.clear()
-        
-        # 创建并启动工作线程
-        self.worker_thread = threading.Thread(
-            target=self.processing_thread, 
-            args=(directory, selected_game),
-            daemon=True
+        # 启动处理线程
+        self.process_thread = threading.Thread(
+            target=self.processing_thread,
+            args=(input_dir, scan_mode == "scan_only", game_id)
         )
-        self.worker_thread.start()
+        self.process_thread.daemon = True
+        self.process_thread.start()
+        
+        # 启动状态更新
+        self.root.after(100, self.update_status)
     
-    def stop_processing(self):
-        """停止处理"""
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.stop_event.set()
-            gui_logger.info("正在停止处理，请稍候...")
-            self.stop_button.config(state=tk.DISABLED, text="正在停止...")
-    
-    def processing_thread(self, directory, selected_game):
-        """处理线程"""
+    def processing_thread(self, input_dir, scan_only, game_id):
         try:
-            gui_logger.info(f"开始处理目录: {directory}")
-            
-            # 创建合并器实例
-            merger = switch_rom_merger.SwitchRomMerger()
-            
-            # 如果需要重新扫描
-            if not self.games:
-                self.games = merger.scan_directory(directory)
-            
-            # 按照选择处理游戏
-            if selected_game == "全部游戏":
-                gui_logger.info("处理所有游戏")
+            gui_logger.info(f"开始处理目录: {input_dir}")
+            gui_logger.info(f"模式: {'仅扫描' if scan_only else '完整处理'}")
+            if game_id:
+                gui_logger.info(f"指定游戏名称: {game_id}")
                 
-                # 创建进度条
-                total_games = sum(1 for game_id, game_data in self.games.items() if game_data['base'])
-                processed = 0
+            # 创建合并器
+            self.merger = switch_rom_merger.SwitchRomMerger()
+            
+            # 扫描文件
+            input_path = Path(input_dir)
+            game_files = self.merger.scan_directory(input_path)
+            
+            # 如果只需要扫描，直接返回
+            if scan_only:
+                gui_logger.info("仅扫描模式，不执行合并")
+                return
                 
-                for game_id, game_data in self.games.items():
-                    # 检查是否请求停止
-                    if self.stop_event.is_set():
-                        gui_logger.info("处理已停止")
-                        break
+            # 如果指定了游戏ID，只处理该游戏
+            if game_id:
+                # 查找匹配的游戏（支持部分匹配）
+                matching_games = []
+                search_term = game_id.lower()
+                
+                for group_id, files_dict in game_files.items():
+                    game_name = files_dict['name'].lower()
                     
-                    # 只处理有基础游戏的条目
-                    if game_data['base']:
-                        try:
-                            gui_logger.info(f"正在处理游戏 ({processed+1}/{total_games}): {game_data['name']}")
-                            merger.merge_files(game_id, game_data)
-                            processed += 1
-                        except Exception as e:
-                            gui_logger.error(f"处理游戏 {game_data['name']} 时出错: {str(e)}")
+                    if search_term in group_id.lower() or search_term in game_name:
+                        matching_games.append((group_id, files_dict))
+                
+                if matching_games:
+                    gui_logger.info(f"找到 {len(matching_games)} 个匹配的游戏:")
+                    for i, (group_id, files_dict) in enumerate(matching_games):
+                        gui_logger.info(f"{i+1}. {files_dict['name']} (ID: {group_id})")
+                    
+                    # 如果只有一个匹配，直接处理
+                    if len(matching_games) == 1:
+                        group_id, files_dict = matching_games[0]
+                        gui_logger.info(f"处理游戏: {files_dict['name']}")
+                        self.merger.merge_files(group_id, files_dict)
+                    else:
+                        # 如果有多个匹配，提示用户选择
+                        gui_logger.info(f"找到多个匹配的游戏，请使用更精确的游戏名称")
+                else:
+                    gui_logger.error(f"找不到匹配的游戏: {game_id}")
             else:
-                # 处理选定的游戏
-                for game_id, game_data in self.games.items():
-                    if game_data['name'] == selected_game:
-                        if game_data['base']:
-                            gui_logger.info(f"处理游戏: {game_data['name']}")
-                            merger.merge_files(game_id, game_data)
-                        else:
-                            gui_logger.error(f"游戏 {game_data['name']} 没有基础游戏文件，无法处理")
-                        break
+                # 处理所有游戏
+                for group_id, files_dict in game_files.items():
+                    # 只处理有基础游戏文件的游戏
+                    if files_dict['base']:
+                        try:
+                            self.merger.merge_files(group_id, files_dict)
+                        except Exception as e:
+                            gui_logger.error(f"处理游戏 {files_dict['name']} 时出错: {str(e)}")
+                    else:
+                        gui_logger.warning(f"跳过没有基础游戏文件的游戏: {files_dict['name']}")
             
-            if not self.stop_event.is_set():
-                gui_logger.info("处理完成")
-                # 在主线程中显示完成消息
-                self.root.after(0, lambda: messagebox.showinfo("完成", "游戏文件处理完成!\n输出文件保存在OUTPUT目录中。"))
+            gui_logger.info("处理完成")
             
         except Exception as e:
-            gui_logger.error(f"处理过程中出现错误: {str(e)}")
+            gui_logger.error(f"处理过程中出错: {str(e)}")
             import traceback
             gui_logger.error(traceback.format_exc())
             
@@ -361,11 +321,22 @@ class SwitchRomMergerGUI:
             self.root.after(0, lambda: messagebox.showerror("错误", f"处理过程中出现错误:\n{str(e)}"))
         
         finally:
-            # 恢复UI状态
-            self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL, text="开始处理"))
-            self.root.after(0, lambda: self.stop_button.config(state=tk.NORMAL, text="停止处理"))
-            self.root.after(0, lambda: self.scan_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
+            self.running = False
+            
+    def stop_processing(self):
+        if not self.running:
+            return
+            
+        gui_logger.info("正在停止处理...")
+        self.running = False
+        
+    def update_status(self):
+        if not self.running:
+            self.start_button.config(state=tk.NORMAL)
+            self.stop_button.config(state=tk.DISABLED)
+            self.status_var.set("处理完成" if not self.running else "已停止")
+        else:
+            self.root.after(100, self.update_status)
     
     def setup_environment(self):
         """运行环境设置脚本"""
