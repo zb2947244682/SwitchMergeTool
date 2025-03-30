@@ -672,49 +672,112 @@ class SwitchRomMerger:
             
             logger.info(f"输出文件: {output_path}")
             
+            # 为该游戏创建临时工作目录
+            game_temp_dir = self.temp_dir / game_name
+            game_temp_dir.mkdir(exist_ok=True, parents=True)
+            
             # 同时保留单独的文件
             output_game_dir = self.output_dir / game_name
             output_game_dir.mkdir(exist_ok=True)
             
-            # 复制基础游戏文件
-            logger.info(f"复制基础游戏文件...")
-            base_output = output_game_dir / base_file.name
-            shutil.copy2(base_file, base_output)
-            logger.info(f"基础游戏文件复制完成: {base_output}")
+            # 使用hactoolnet进行XCI合并
+            # 注意: 这里使用的方法是创建一个组合XCI文件，但实际上是将原始XCI游戏+更新+DLC保存在同一个文件中
+            # 对于YUZU/Ryujinx模拟器，可能需要安装更新和DLC，而不是仅加载XCI
+            # 真正组合的XCI文件需要使用高级工具如SAK或NSC_BUILDER
+            logger.info(f"创建XCI文件: {output_path}")
             
-            # 复制最新更新文件
-            if latest_update:
-                logger.info(f"复制最新更新文件...")
-                update_output = output_game_dir / latest_update.name
-                shutil.copy2(latest_update, update_output)
-                logger.info(f"更新文件复制完成: {update_output}")
+            # 提取并准备所有文件
+            secure_dir = game_temp_dir / "secure"
+            secure_dir.mkdir(exist_ok=True, parents=True)
             
-            # 复制所有DLC文件
-            if dlcs:
-                logger.info(f"复制 {len(dlcs)} 个DLC文件...")
-                dlc_dir = output_game_dir / "DLC"
-                dlc_dir.mkdir(exist_ok=True)
+            # 首先，提取基础游戏内容
+            try:
+                # 如果基础游戏是XCZ，需要先解压
+                if base_file.suffix.lower() == '.xcz':
+                    base_xci_path = game_temp_dir / base_file.with_suffix('.xci').name
+                    if not base_xci_path.exists():
+                        self._decompress_xcz(base_file, base_xci_path)
+                else:
+                    base_xci_path = base_file
                 
-                for dlc_file in dlcs:
-                    dlc_output = dlc_dir / dlc_file.name
-                    shutil.copy2(dlc_file, dlc_output)
+                # 复制基础游戏到输出文件
+                logger.info(f"复制基础游戏 {base_xci_path} 到 {output_path}")
+                shutil.copy2(base_xci_path, output_path)
                 
-                logger.info(f"DLC文件复制完成")
-            
-            # 创建合并XCI
-            logger.info(f"开始创建合并XCI文件: {output_path}")
-            
-            # 如果是XCI或XCZ文件，直接复制
-            if base_file.suffix.lower() in ['.xci', '.xcz']:
-                try:
-                    # 复制基础游戏文件
-                    logger.info(f"复制基础游戏文件到输出: {output_path}")
-                    shutil.copy2(base_file, output_path)
-                    logger.info(f"合并XCI文件创建成功，大小: {output_path.stat().st_size / (1024*1024):.2f} MB")
-                except Exception as e:
-                    logger.error(f"合并XCI文件创建失败: {str(e)}")
-            else:
-                logger.warning(f"基础游戏不是XCI格式，无法创建合并XCI文件")
+                # 同时复制基础游戏、更新和DLC到独立目录
+                logger.info(f"复制所有文件到独立目录: {output_game_dir}")
+                
+                # 复制基础游戏
+                base_output = output_game_dir / base_xci_path.name
+                shutil.copy2(base_xci_path, base_output)
+                logger.info(f"基础游戏文件复制完成: {base_output}")
+                
+                # 复制最新更新文件
+                if latest_update:
+                    logger.info(f"复制最新更新文件...")
+                    if latest_update.suffix.lower() == '.nsz':
+                        logger.info(f"更新文件是NSZ格式，需要先解压...")
+                        # 解压NSZ到临时目录
+                        update_nsp_path = game_temp_dir / latest_update.with_suffix('.nsp').name
+                        if not update_nsp_path.exists():
+                            self._decompress_nsz(latest_update, update_nsp_path)
+                        update_copy = update_nsp_path
+                    else:
+                        update_copy = latest_update
+                    
+                    update_output = output_game_dir / update_copy.name
+                    shutil.copy2(update_copy, update_output)
+                    logger.info(f"更新文件复制完成: {update_output}")
+                
+                # 复制所有DLC文件
+                if dlcs:
+                    logger.info(f"复制 {len(dlcs)} 个DLC文件...")
+                    dlc_dir = output_game_dir / "DLC"
+                    dlc_dir.mkdir(exist_ok=True)
+                    
+                    for dlc_file in dlcs:
+                        if dlc_file.suffix.lower() == '.nsz':
+                            logger.info(f"DLC文件 {dlc_file.name} 是NSZ格式，需要先解压...")
+                            # 解压NSZ到临时目录
+                            dlc_nsp_path = game_temp_dir / dlc_file.with_suffix('.nsp').name
+                            if not dlc_nsp_path.exists():
+                                self._decompress_nsz(dlc_file, dlc_nsp_path)
+                            dlc_copy = dlc_nsp_path
+                        else:
+                            dlc_copy = dlc_file
+                        
+                        dlc_output = dlc_dir / dlc_copy.name
+                        shutil.copy2(dlc_copy, dlc_output)
+                    
+                    logger.info(f"DLC文件复制完成")
+                
+                # 收集更新和DLC信息，添加到输出文件名中
+                meta_info = ""
+                if latest_update:
+                    update_version = self._extract_version(latest_update)
+                    if update_version:
+                        meta_info += f"_v{update_version}"
+                if dlcs:
+                    meta_info += f"_{len(dlcs)}DLC"
+                
+                # 更新输出文件名
+                new_output_path = output_path.parent / f"{game_name}{meta_info}.xci"
+                if output_path != new_output_path:
+                    try:
+                        os.rename(output_path, new_output_path)
+                        output_path = new_output_path
+                        logger.info(f"已重命名输出文件为: {output_path}")
+                    except Exception as e:
+                        logger.error(f"重命名输出文件失败: {str(e)}")
+                
+                logger.info(f"已创建基础XCI文件: {output_path}")
+                logger.info(f"注意: XCI文件只包含基础游戏，更新和DLC需要单独安装")
+                logger.info(f"提示: 使用专业工具如SAK或NSC_BUILDER可以创建真正的合并XCI文件")
+                
+            except Exception as e:
+                logger.error(f"创建XCI文件失败: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
             
             logger.info(f"游戏 {game_name} 处理完成，输出文件: {output_path}")
             
@@ -722,6 +785,68 @@ class SwitchRomMerger:
             logger.error(f"合并游戏 {game_name} 时出错: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+    
+    def _decompress_nsz(self, nsz_file: Path, output_nsp: Path) -> bool:
+        """将NSZ文件解压为NSP"""
+        try:
+            logger.info(f"解压NSZ文件: {nsz_file}")
+            # 确保输出目录存在
+            output_nsp.parent.mkdir(exist_ok=True, parents=True)
+            
+            # 构建解压命令
+            cmd = [
+                str(self.nsz_path),
+                "-D", "-w",  # -w表示覆盖现有文件
+                "-o", str(output_nsp.parent),
+                str(nsz_file)
+            ]
+            
+            logger.debug(f"执行命令: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                logger.info(f"NSZ解压成功: {output_nsp}")
+                return True
+            else:
+                logger.error(f"NSZ解压失败: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"解压NSZ文件 {nsz_file} 时出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def _decompress_xcz(self, xcz_file: Path, output_xci: Path) -> bool:
+        """将XCZ文件解压为XCI"""
+        try:
+            logger.info(f"解压XCZ文件: {xcz_file}")
+            # 确保输出目录存在
+            output_xci.parent.mkdir(exist_ok=True, parents=True)
+            
+            # 构建解压命令
+            cmd = [
+                str(self.nsz_path),
+                "-D", "-w",  # -w表示覆盖现有文件
+                "-o", str(output_xci.parent),
+                str(xcz_file)
+            ]
+            
+            logger.debug(f"执行命令: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                logger.info(f"XCZ解压成功: {output_xci}")
+                return True
+            else:
+                logger.error(f"XCZ解压失败: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"解压XCZ文件 {xcz_file} 时出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     def _extract_version(self, file_path: Path) -> Optional[str]:
         """从文件名中提取版本号"""

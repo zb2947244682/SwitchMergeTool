@@ -6,8 +6,24 @@
 
 - 递归扫描目录中的Switch游戏文件（XCI、XCZ、NSP、NSZ）
 - 自动识别同一游戏的本体、DLC和补丁
-- 将相关文件合并为完整的XCI格式
-- 支持按游戏名称归类输出结果
+- 将XCZ和NSZ文件解压为XCI和NSP格式
+- 创建整理好的游戏文件夹结构
+- 生成带版本和DLC信息的XCI文件
+
+## XCI合并说明
+
+重要提示：本工具目前提供的是**基础XCI合并**功能，它会：
+
+1. 解压XCZ/NSZ格式的文件
+2. 将同一游戏的本体、更新和DLC文件整理到一个目录下
+3. 生成一个命名规范的XCI文件（但此文件仅包含基础游戏，不包含更新和DLC）
+
+如需**完全合并**（真正将更新和DLC整合到同一个XCI文件中），请使用：
+
+- [SAK (Switch Army Knife)](https://github.com/dezem/SAK)
+- [NSC_BUILDER 汉化版](https://github.com/zdm65477730/NSC_BUILDER)
+
+这些专业工具可以使用我们工具生成的整理好的文件，进行真正的完全合并。
 
 ## 使用前准备
 
@@ -19,7 +35,7 @@
 3. 确保以下文件/目录位于工具同级目录：
    - `prod.keys` - 产品密钥文件
    - `title.keys` - 标题密钥文件（可选）
-   - `Firmware` - 固件目录，包含Switch固件文件
+   - `Firmware` - 固件目录，包含Switch固件文件（可选）
 
 4. **重要**：安装Microsoft Visual C++ Build Tools
    - 访问 https://visualstudio.microsoft.com/visual-cpp-build-tools/
@@ -37,9 +53,26 @@
    - 补丁：`塞尔达传说：旷野之息_v1.6.0.nsp`或包含`update`/`patch`关键字
    - DLC：`塞尔达传说：旷野之息_DLC.nsp`或包含`dlc`关键字
 
-3. 双击运行`merge_switch_roms.bat`
+3. 运行方式：
+   - 双击运行`merge_switch_roms.bat`自动合并所有游戏
+   - 或使用命令行运行：`python switch_rom_merger.py --game-id "游戏名称"` 指定游戏处理
 
-4. 处理完成后，合并的游戏文件会保存到`OUTPUT`目录中
+4. 处理完成后，结果会保存到`OUTPUT`目录：
+   - `OUTPUT/游戏名称_版本号_DLC数量.xci` - 基础游戏XCI文件
+   - `OUTPUT/游戏名称/` - 包含基础游戏、最新更新和所有DLC的分类目录
+
+5. 如果需要创建真正的合并XCI（包含更新和DLC），可以：
+   - 使用SAK或NSC_BUILDER工具
+   - 作为输入使用我们脚本生成的OUTPUT/游戏名称目录下的文件
+
+## 命令行选项
+
+```
+python switch_rom_merger.py [选项]
+选项:
+  --scan-only       只扫描并显示游戏信息，不执行合并
+  --game-id NAME    只处理指定名称的游戏
+```
 
 ## 依赖库安装问题
 
@@ -60,7 +93,7 @@
 - 临时文件会保存在`TEMP`目录，处理完成后会被清理
 - 日志文件会保存在`rom_merger.log`，可用于排查问题
 - 对于有多个版本的基础游戏文件，会选择文件大小最大的一个
-- 对于多个更新文件，会选择文件大小最大的一个（通常是最新版本）
+- 对于多个更新文件，会选择最新的一个（通常是版本号最高或文件最大的）
 
 ## 故障排除
 
