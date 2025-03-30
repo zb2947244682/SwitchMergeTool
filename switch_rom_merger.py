@@ -47,9 +47,9 @@ logger = logging.getLogger('SwitchRomMerger')
 class SwitchRomMerger:
     def __init__(self):
         self.supported_extensions = {'.xci', '.xcz', '.nsp', '.nsz'}
-        self.output_dir = Path('OUTPUT')
+        self.output_dir = Path('output')
         self.output_dir.mkdir(exist_ok=True)
-        self.temp_dir = Path('TEMP')
+        self.temp_dir = Path('temp')
         self.temp_dir.mkdir(exist_ok=True)
         
         # 密钥和固件路径
@@ -627,6 +627,7 @@ class SwitchRomMerger:
     
     def merge_files(self, title_id: str, files_dict: Dict):
         """合并同一游戏的文件"""
+        game_temp_dir = None
         try:
             base_file = files_dict['base']
             updates = files_dict['updates']
@@ -668,23 +669,30 @@ class SwitchRomMerger:
             # 清理文件名称中的特殊字符
             output_filename = re.sub(r'[\\/:*?"<>|]', '', output_filename)
             output_filename += ".xci"
-            output_path = self.output_dir / output_filename
             
-            logger.info(f"输出文件: {output_path}")
+            # 为该游戏创建输出目录结构
+            output_game_dir = self.output_dir / game_name
+            output_game_dir.mkdir(exist_ok=True, parents=True)
+            
+            # 创建UPDATE和DLC子目录
+            output_update_dir = output_game_dir / "UPDATE"
+            output_dlc_dir = output_game_dir / "DLC"
+            
+            # 主要输出XCI文件路径
+            output_xci_path = output_game_dir / f"{game_name}.xci"
+            
+            logger.info(f"输出目录: {output_game_dir}")
+            logger.info(f"主XCI文件: {output_xci_path}")
             
             # 为该游戏创建临时工作目录
             game_temp_dir = self.temp_dir / game_name
             game_temp_dir.mkdir(exist_ok=True, parents=True)
             
-            # 同时保留单独的文件
-            output_game_dir = self.output_dir / game_name
-            output_game_dir.mkdir(exist_ok=True)
-            
             # 使用hactoolnet进行XCI合并
-            # 注意: 这里使用的方法是创建一个组合XCI文件，但实际上是将原始XCI游戏+更新+DLC保存在同一个文件中
+            # 注意: 这里使用的方法是创建一个组合XCI文件，但实际上是将原始XCI游戏复制并提供单独的更新和DLC
             # 对于YUZU/Ryujinx模拟器，可能需要安装更新和DLC，而不是仅加载XCI
             # 真正组合的XCI文件需要使用高级工具如SAK或NSC_BUILDER
-            logger.info(f"创建XCI文件: {output_path}")
+            logger.info(f"创建XCI文件: {output_xci_path}")
             
             # 提取并准备所有文件
             secure_dir = game_temp_dir / "secure"
@@ -700,40 +708,34 @@ class SwitchRomMerger:
                 else:
                     base_xci_path = base_file
                 
-                # 复制基础游戏到输出文件
-                logger.info(f"复制基础游戏 {base_xci_path} 到 {output_path}")
-                shutil.copy2(base_xci_path, output_path)
+                # 复制基础游戏到主XCI文件
+                logger.info(f"复制基础游戏 {base_xci_path} 到 {output_xci_path}")
+                shutil.copy2(base_xci_path, output_xci_path)
                 
-                # 同时复制基础游戏、更新和DLC到独立目录
-                logger.info(f"复制所有文件到独立目录: {output_game_dir}")
-                
-                # 复制基础游戏
-                base_output = output_game_dir / base_xci_path.name
-                shutil.copy2(base_xci_path, base_output)
-                logger.info(f"基础游戏文件复制完成: {base_output}")
-                
-                # 复制最新更新文件
-                if latest_update:
-                    logger.info(f"复制最新更新文件...")
-                    if latest_update.suffix.lower() == '.nsz':
-                        logger.info(f"更新文件是NSZ格式，需要先解压...")
-                        # 解压NSZ到临时目录
-                        update_nsp_path = game_temp_dir / latest_update.with_suffix('.nsp').name
-                        if not update_nsp_path.exists():
-                            self._decompress_nsz(latest_update, update_nsp_path)
-                        update_copy = update_nsp_path
-                    else:
-                        update_copy = latest_update
+                # 处理更新文件
+                if updates:
+                    logger.info(f"处理更新文件...")
+                    output_update_dir.mkdir(exist_ok=True, parents=True)
                     
-                    update_output = output_game_dir / update_copy.name
-                    shutil.copy2(update_copy, update_output)
-                    logger.info(f"更新文件复制完成: {update_output}")
+                    for update_file in updates:
+                        if update_file.suffix.lower() == '.nsz':
+                            logger.info(f"更新文件 {update_file.name} 是NSZ格式，需要先解压...")
+                            # 解压NSZ到临时目录
+                            update_nsp_path = game_temp_dir / update_file.with_suffix('.nsp').name
+                            if not update_nsp_path.exists():
+                                self._decompress_nsz(update_file, update_nsp_path)
+                            update_copy = update_nsp_path
+                        else:
+                            update_copy = update_file
+                        
+                        update_output = output_update_dir / update_copy.name
+                        shutil.copy2(update_copy, update_output)
+                        logger.info(f"更新文件复制完成: {update_output}")
                 
-                # 复制所有DLC文件
+                # 处理DLC文件
                 if dlcs:
-                    logger.info(f"复制 {len(dlcs)} 个DLC文件...")
-                    dlc_dir = output_game_dir / "DLC"
-                    dlc_dir.mkdir(exist_ok=True)
+                    logger.info(f"处理 {len(dlcs)} 个DLC文件...")
+                    output_dlc_dir.mkdir(exist_ok=True, parents=True)
                     
                     for dlc_file in dlcs:
                         if dlc_file.suffix.lower() == '.nsz':
@@ -746,43 +748,25 @@ class SwitchRomMerger:
                         else:
                             dlc_copy = dlc_file
                         
-                        dlc_output = dlc_dir / dlc_copy.name
+                        dlc_output = output_dlc_dir / dlc_copy.name
                         shutil.copy2(dlc_copy, dlc_output)
                     
                     logger.info(f"DLC文件复制完成")
-                
-                # 收集更新和DLC信息，添加到输出文件名中
-                meta_info = ""
-                if latest_update:
-                    update_version = self._extract_version(latest_update)
-                    if update_version:
-                        meta_info += f"_v{update_version}"
-                if dlcs:
-                    meta_info += f"_{len(dlcs)}DLC"
-                
-                # 更新输出文件名
-                new_output_path = output_path.parent / f"{game_name}{meta_info}.xci"
-                if output_path != new_output_path:
-                    try:
-                        os.rename(output_path, new_output_path)
-                        output_path = new_output_path
-                        logger.info(f"已重命名输出文件为: {output_path}")
-                    except Exception as e:
-                        logger.error(f"重命名输出文件失败: {str(e)}")
-                
-                logger.info(f"已创建基础XCI文件: {output_path}")
-                logger.info(f"注意: XCI文件只包含基础游戏，更新和DLC需要单独安装")
-                logger.info(f"提示: 使用专业工具如SAK或NSC_BUILDER可以创建真正的合并XCI文件")
                 
                 # 显示详细的SAK使用提示
                 logger.info("\n使用SAK合并此游戏的步骤:")
                 logger.info(f"1. 下载SAK工具 (https://github.com/dezem/SAK)")
                 logger.info(f"2. 将以下文件添加到SAK工具:")
-                logger.info(f"   - 基础游戏: {base_output}")
-                if latest_update:
-                    logger.info(f"   - 更新文件: {update_output}")
-                if dlcs:
-                    logger.info(f"   - DLC文件: 位于 {dlc_dir} 目录")
+                logger.info(f"   - 基础游戏: {output_xci_path}")
+                
+                update_files = list(output_update_dir.glob("*.*sp")) if output_update_dir.exists() else []
+                if update_files:
+                    logger.info(f"   - 更新文件: 位于 {output_update_dir} 目录")
+                
+                dlc_files = list(output_dlc_dir.glob("*.*sp")) if output_dlc_dir.exists() else []
+                if dlc_files:
+                    logger.info(f"   - DLC文件: 位于 {output_dlc_dir} 目录")
+                
                 logger.info(f"3. 使用SAK工具进行合并，选择'完整合并'选项")
                 logger.info(f"4. 或者在YUZU中分别安装基础游戏后，通过'文件->安装文件到NAND'安装更新和DLC")
                 
@@ -800,12 +784,20 @@ class SwitchRomMerger:
                 import traceback
                 logger.error(traceback.format_exc())
             
-            logger.info(f"游戏 {game_name} 处理完成，输出文件: {output_path}")
+            logger.info(f"游戏 {game_name} 处理完成，输出目录: {output_game_dir}")
             
         except Exception as e:
             logger.error(f"合并游戏 {game_name} 时出错: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+        finally:
+            # 清理游戏临时目录
+            if game_temp_dir and game_temp_dir.exists():
+                try:
+                    logger.info(f"清理临时文件: {game_temp_dir}")
+                    shutil.rmtree(game_temp_dir)
+                except Exception as e:
+                    logger.warning(f"清理临时文件失败: {str(e)}")
     
     def _decompress_nsz(self, nsz_file: Path, output_nsp: Path) -> bool:
         """将NSZ文件解压为NSP"""
@@ -979,6 +971,17 @@ def main():
                     merger.merge_files(group_id, files_dict)
                 else:
                     logger.warning(f"跳过没有基础游戏文件的游戏: {files_dict['name']}")
+        
+        # 处理完成后清理所有临时文件
+        temp_dir = Path('temp')
+        if temp_dir.exists():
+            try:
+                logger.info("清理所有临时文件...")
+                shutil.rmtree(temp_dir)
+                temp_dir.mkdir(exist_ok=True)
+                logger.info("临时文件清理完成")
+            except Exception as e:
+                logger.error(f"清理临时文件失败: {str(e)}")
         
         logger.info("处理完成")
         
