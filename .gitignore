@@ -1,0 +1,46 @@
+# Switch Roms项目的.gitignore文件
+
+# 排除rom文件夹
+/rom/
+/rom/**
+
+# 排除Firmware文件夹
+/Firmware/
+/Firmware/**
+
+# 排除临时文件夹
+/TEMP/
+/OUTPUT/
+
+# 排除可能包含敏感信息的文件
+*.keys
+
+# Python生成的文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 操作系统生成的文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志文件
+*.log 
