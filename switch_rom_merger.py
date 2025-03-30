@@ -45,12 +45,13 @@ logging.basicConfig(
 logger = logging.getLogger('SwitchRomMerger')
 
 class SwitchRomMerger:
-    def __init__(self):
+    def __init__(self, flat_output=False):
         self.supported_extensions = {'.xci', '.xcz', '.nsp', '.nsz'}
         self.output_dir = Path('output')
         self.output_dir.mkdir(exist_ok=True)
         self.temp_dir = Path('temp')
         self.temp_dir.mkdir(exist_ok=True)
+        self.flat_output = flat_output
         
         # 密钥和固件路径
         self.keys_file = None
@@ -670,16 +671,34 @@ class SwitchRomMerger:
             output_filename = re.sub(r'[\\/:*?"<>|]', '', output_filename)
             output_filename += ".xci"
             
-            # 为该游戏创建输出目录结构
-            output_game_dir = self.output_dir / game_name
-            output_game_dir.mkdir(exist_ok=True, parents=True)
-            
-            # 创建UPDATE和DLC子目录
-            output_update_dir = output_game_dir / "UPDATE"
-            output_dlc_dir = output_game_dir / "DLC"
-            
-            # 主要输出XCI文件路径
-            output_xci_path = output_game_dir / f"{game_name}.xci"
+            # 根据平铺设置决定输出目录结构
+            if self.flat_output:
+                # 平铺模式：所有文件直接放在output目录下
+                output_game_dir = self.output_dir
+                output_xci_path = output_game_dir / output_filename
+                output_update_dir = output_game_dir
+                output_dlc_dir = output_game_dir
+                
+                # 更新和DLC文件名添加游戏前缀，防止不同游戏文件重名
+                update_prefix = f"{game_name}_"
+                dlc_prefix = f"{game_name}_"
+                
+                logger.info(f"使用平铺输出模式")
+            else:
+                # 默认模式：按游戏名创建子目录
+                output_game_dir = self.output_dir / game_name
+                output_game_dir.mkdir(exist_ok=True, parents=True)
+                
+                # 创建UPDATE和DLC子目录
+                output_update_dir = output_game_dir / "UPDATE"
+                output_dlc_dir = output_game_dir / "DLC"
+                
+                # 主要输出XCI文件路径
+                output_xci_path = output_game_dir / f"{game_name}.xci"
+                
+                # 不需要添加前缀
+                update_prefix = ""
+                dlc_prefix = ""
             
             logger.info(f"输出目录: {output_game_dir}")
             logger.info(f"主XCI文件: {output_xci_path}")
@@ -715,7 +734,8 @@ class SwitchRomMerger:
                 # 处理更新文件
                 if updates:
                     logger.info(f"处理更新文件...")
-                    output_update_dir.mkdir(exist_ok=True, parents=True)
+                    if not self.flat_output:
+                        output_update_dir.mkdir(exist_ok=True, parents=True)
                     
                     for update_file in updates:
                         if update_file.suffix.lower() == '.nsz':
@@ -728,14 +748,17 @@ class SwitchRomMerger:
                         else:
                             update_copy = update_file
                         
-                        update_output = output_update_dir / update_copy.name
+                        # 添加游戏名前缀（平铺模式）
+                        output_name = f"{update_prefix}{update_copy.name}"
+                        update_output = output_update_dir / output_name
                         shutil.copy2(update_copy, update_output)
                         logger.info(f"更新文件复制完成: {update_output}")
                 
                 # 处理DLC文件
                 if dlcs:
                     logger.info(f"处理 {len(dlcs)} 个DLC文件...")
-                    output_dlc_dir.mkdir(exist_ok=True, parents=True)
+                    if not self.flat_output:
+                        output_dlc_dir.mkdir(exist_ok=True, parents=True)
                     
                     for dlc_file in dlcs:
                         if dlc_file.suffix.lower() == '.nsz':
@@ -748,7 +771,9 @@ class SwitchRomMerger:
                         else:
                             dlc_copy = dlc_file
                         
-                        dlc_output = output_dlc_dir / dlc_copy.name
+                        # 添加游戏名前缀（平铺模式）
+                        output_name = f"{dlc_prefix}{dlc_copy.name}"
+                        dlc_output = output_dlc_dir / output_name
                         shutil.copy2(dlc_copy, dlc_output)
                     
                     logger.info(f"DLC文件复制完成")
@@ -759,11 +784,13 @@ class SwitchRomMerger:
                 logger.info(f"2. 将以下文件添加到SAK工具:")
                 logger.info(f"   - 基础游戏: {output_xci_path}")
                 
-                update_files = list(output_update_dir.glob("*.*sp")) if output_update_dir.exists() else []
+                update_pattern = f"{update_prefix}*.*sp" if self.flat_output else "*.*sp"
+                update_files = list(output_update_dir.glob(update_pattern)) if output_update_dir.exists() else []
                 if update_files:
                     logger.info(f"   - 更新文件: 位于 {output_update_dir} 目录")
                 
-                dlc_files = list(output_dlc_dir.glob("*.*sp")) if output_dlc_dir.exists() else []
+                dlc_pattern = f"{dlc_prefix}*.*sp" if self.flat_output else "*.*sp"
+                dlc_files = list(output_dlc_dir.glob(dlc_pattern)) if output_dlc_dir.exists() else []
                 if dlc_files:
                     logger.info(f"   - DLC文件: 位于 {output_dlc_dir} 目录")
                 
@@ -910,6 +937,7 @@ def main():
         parser = argparse.ArgumentParser(description='Switch游戏合并工具')
         parser.add_argument('--scan-only', action='store_true', help='仅扫描游戏文件，不执行合并')
         parser.add_argument('--game-id', type=str, help='仅处理指定ID的游戏')
+        parser.add_argument('--flat-output', action='store_true', help='平铺所有输出文件到output根目录，不创建游戏子目录')
         args = parser.parse_args()
         
         # 获取当前目录
@@ -925,7 +953,7 @@ def main():
             target_dir = current_dir
         
         # 创建合并器实例
-        merger = SwitchRomMerger()
+        merger = SwitchRomMerger(flat_output=args.flat_output)
         
         # 扫描游戏文件
         game_files = merger.scan_directory(target_dir)

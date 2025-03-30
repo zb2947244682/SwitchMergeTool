@@ -96,6 +96,18 @@ class SwitchRomMergerGUI:
         self.browse_btn = ttk.Button(self.dir_frame, text="浏览...", command=self.browse_directory)
         self.browse_btn.pack(side=tk.RIGHT)
         
+        # 添加输出设置区域
+        self.output_frame = ttk.LabelFrame(self.control_frame, text="输出设置", padding=10)
+        self.output_frame.pack(fill=tk.X, pady=5)
+        
+        self.flat_output_var = tk.BooleanVar(value=False)
+        self.flat_output_check = ttk.Checkbutton(
+            self.output_frame,
+            text="平铺输出文件（所有文件直接放在output目录下，不创建游戏子目录）",
+            variable=self.flat_output_var
+        )
+        self.flat_output_check.pack(anchor=tk.W)
+        
         # 操作按钮区域
         self.button_frame = ttk.Frame(self.control_frame)
         self.button_frame.pack(fill=tk.X, pady=10)
@@ -339,13 +351,18 @@ class SwitchRomMergerGUI:
         self.scan_btn.config(state=tk.DISABLED)
         self.merge_btn.config(state=tk.DISABLED)
         
-        # 启动后台线程
-        threading.Thread(target=self.merge_thread, args=(rom_dir,), daemon=True).start()
+        # 获取平铺输出设置
+        flat_output = self.flat_output_var.get()
+        if flat_output:
+            self.log_message("使用平铺输出模式，所有文件将直接放在output目录下")
         
-    def merge_thread(self, rom_dir):
+        # 启动后台线程
+        threading.Thread(target=self.merge_thread, args=(rom_dir, flat_output), daemon=True).start()
+        
+    def merge_thread(self, rom_dir, flat_output):
         """后台合并线程"""
         try:
-            merger = SwitchRomMerger()
+            merger = SwitchRomMerger(flat_output=flat_output)
             game_files = merger.scan_directory(rom_dir)
             
             # 处理所有游戏
