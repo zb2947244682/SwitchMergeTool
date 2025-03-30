@@ -786,6 +786,15 @@ class SwitchRomMerger:
                 logger.info(f"3. 使用SAK工具进行合并，选择'完整合并'选项")
                 logger.info(f"4. 或者在YUZU中分别安装基础游戏后，通过'文件->安装文件到NAND'安装更新和DLC")
                 
+                # 推荐使用NSC_BUILDER的详细提示
+                logger.info("\n使用NSC_BUILDER合并此游戏的步骤:")
+                logger.info(f"1. 下载NSC_BUILDER工具汉化版 (https://github.com/zdm65477730/NSC_BUILDER/releases)")
+                logger.info(f"2. 将基础游戏、更新文件和DLC文件放在同一个文件夹中")
+                logger.info(f"3. 使用NSC_BUILDER的'多文件处理'功能(输入2)")
+                logger.info(f"4. 将包含所有文件的文件夹拖拽到窗口中")
+                logger.info(f"5. 选择'重新打包列表为XCI'选项")
+                logger.info(f"6. 这将创建一个真正包含更新和DLC的XCI文件，可以被YUZU正确识别")
+                
             except Exception as e:
                 logger.error(f"创建XCI文件失败: {str(e)}")
                 import traceback
